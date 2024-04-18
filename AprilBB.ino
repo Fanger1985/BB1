@@ -14,8 +14,8 @@ const char* password = "jeansrocket543";
 // Sensor pin definitions
 #define TRIG_PIN 16
 #define ECHO_PIN 17
-#define IR_LEFT 13
-#define IR_RIGHT 4
+#define IR_LEFT 13 //REAR LEFT FACING AWAY FROM ROBOT
+#define IR_RIGHT 4 // REAR RIGHT FACING AWAY FROM ROBOT
 
 // Global variables for sensor readings and motor speed
 long duration;
@@ -106,6 +106,16 @@ void setup() {
         stopMotors();
         server.send(200, "text/plain", "Stopping");
     });
+        server.on("/auto", HTTP_GET, []() {
+        isManualControl = false; // Allow the robot to move autonomously
+        server.send(200, "text/plain", "Switched to auto mode");
+    });
+    server.on("/explore", HTTP_GET, []() {
+        isManualControl = true; // Take manual control for exploration
+        exploreEnvironment();
+        server.send(200, "text/plain", "Exploration mode activated");
+    });
+
     server.on("/dance", HTTP_GET, []() {
         isManualControl = true; // Take manual control for the dance
         danceRoutine();
@@ -175,39 +185,68 @@ void loop() {
 }
 
 void autoMove() {
-    // Autonomous movement logic with random choices for actions
-    if (random(0, 10) < 3) {  // 30% chance to just stop and look around
-        stopMotors();
-        delay(random(500, 1000));
+    // First, update sensor readings with a brief pause to stabilize sensor input
+    delay(200);  // Pause to let sensors stabilize after the last movement
+    IR_Left_Value = digitalRead(IR_LEFT);
+    IR_Right_Value = digitalRead(IR_RIGHT);
+    distance = getUltrasonicDistance();
+
+    // Check surroundings before moving
+    if (distance < 30) {
+        handleFrontObstacle();
+        delay(500);  // Thinking pause after handling an obstacle
+        return;
+    }
+    if (IR_Left_Value == 0 || IR_Right_Value == 0) {
+        handleRearObstacle();
+        delay(500);  // Thinking pause after adjusting course
         return;
     }
 
-    // More frequent checks to change behaviors quickly
+    // Randomly choose actions with pauses to simulate thinking
     int action = random(0, 100);
-    if (action < 20) {  // 20% chance to move forward
+    if (action < 20) {
         moveForward();
-    } else if (action < 40) {  // 20% chance to move backward
+    } else if (action < 40) {
         moveBackward();
-    } else if (action < 60) {  // 20% chance to spin right
+    } else if (action < 60) {
         spinRight();
-    } else if (action < 80) {  // 20% chance to spin left
+    } else if (action < 80) {
         spinLeft();
-    } else {  // 20% chance to execute a random dance move
-        int danceMove = random(1, 5);
-        switch (danceMove) {
-            case 1:
-            case 2:
-                spinRight();
-                delay(500);
-                break;
-            case 3:
-            case 4:
-                spinLeft();
-                delay(500);
-                break;
-        }
+    } else {
+        danceRoutine();
     }
-    delay(random(500, 1500));  // Random delay for unpredictable behavior
+    delay(500 + random(500, 1500));  // Longer random delay for unpredictable behavior and thinking time
+}
+void exploreEnvironment() {
+    IR_Left_Value = digitalRead(IR_LEFT);
+    IR_Right_Value = digitalRead(IR_RIGHT);
+    distance = getUltrasonicDistance();
+
+    // Analyze the environment and make decisions
+    if (distance > 100) {  // If there's a lot of space ahead, go explore it
+        moveForward();
+        delay(1000);  // Move forward for a bit
+    } else if (distance < 30) {  // Too close to something, need to decide direction
+        handleFrontObstacle();  // Handle it appropriately
+    }
+
+    // Check rear sensors for obstacles when choosing to back up
+    if (IR_Left_Value == 0 || IR_Right_Value == 0) {
+        handleRearObstacle();
+    } else if (random(0, 2) == 0) {  // Randomly decide to back up if all clear
+        moveBackward();
+        delay(500);
+    }
+
+    // Occasionally spin around to scan the area
+    if (random(0, 10) < 2) {
+        spinLeft();
+        delay(1000);
+    } else if (random(0, 10) < 2) {
+        spinRight();
+        delay(1000);
+    }
 }
 
 
@@ -218,27 +257,34 @@ String controlPage() {
 <title>ESP32 Robot Control</title>
 <style>
   body { font-family: Arial, sans-serif; background: #e0e5ec; display: flex; flex-direction: column; align-items: center; height: 100vh; margin: 0; }
-  .button { border: none; background: #e0e5ec; border-radius: 12px; padding: 20px 40px; font-size: 16px; color: #333; box-shadow: -5px -5px 10px #fff, 5px 5px 15px #babecc; cursor: pointer; outline: none; margin: 10px; }
-  .button:active { box-shadow: inset -5px -5px 10px #fff, inset 5px 5px 15px #babecc; color: #000; }
-  #controlGrid { display: grid; grid-template-columns: auto auto auto; justify-content: center; align-items: center; grid-gap: 10px; }
-  #stopButton { grid-column: 2; grid-row: 2; }
+  .button { border: none; border-radius: 12px; padding: 20px 40px; font-size: 16px; color: #fff; cursor: pointer; outline: none; margin: 10px; }
+  .stop { background: #ff4136; }
+  .control { background: #7fdbff; }
+  .special { background: #85144b; }
+  .button:active { color: #000; }
+  #controlGrid { display: grid; grid-template-rows: auto auto auto; grid-template-columns: auto auto auto; justify-content: center; align-items: center; grid-gap: 10px; }
+  #autoButton { grid-column: 1; grid-row: 1; }
+  #exploreButton { grid-column: 3; grid-row: 1; }
   #forwardButton { grid-column: 2; grid-row: 1; }
-  #backwardButton { grid-column: 2; grid-row: 3; }
   #leftButton { grid-column: 1; grid-row: 2; }
+  #stopButton { grid-column: 2; grid-row: 2; }
   #rightButton { grid-column: 3; grid-row: 2; }
-  #danceButton { grid-column: 3; grid-row: 3; }
-  iframe { width: 80%; height: 200px; border-radius: 12px; border: none; box-shadow: -5px -5px 10px #fff, 5px 5px 15px #babecc; margin-top: 20px; }
+  #backwardButton { grid-column: 2; grid-row: 3; }
+  #danceButton { grid-column: 1; grid-row: 3; }
+  iframe { width: 80%; height: 200px; border-radius: 12px; border: none; margin-top: 20px; }
 </style>
 </head>
 <body>
 <h1>Robot Control Interface</h1>
 <div id="controlGrid">
-  <button id="forwardButton" class="button" onmousedown='sendCommand("/forward"); return false;' onmouseup='sendCommand("/stop"); return false;'>Forward</button>
-  <button id="leftButton" class="button" onmousedown='sendCommand("/left"); return false;' onmouseup='sendCommand("/stop"); return false;'>Left</button>
-  <button id="stopButton" class="button" onclick='sendCommand("/stop"); return false;'>Stop</button>
-  <button id="rightButton" class="button" onmousedown='sendCommand("/right"); return false;' onmouseup='sendCommand("/stop"); return false;'>Right</button>
-  <button id="backwardButton" class="button" onmousedown='sendCommand("/backward"); return false;' onmouseup='sendCommand("/stop"); return false;'>Backward</button>
-  <button id="danceButton" class="button" onclick='sendCommand("/dance"); return false;'>Dance</button>
+  <button id="autoButton" class="button special" onclick='sendCommand("/auto"); return false;'>Auto</button>
+  <button id="exploreButton" class="button special" onclick='sendCommand("/explore"); return false;'>Explore</button>
+  <button id="forwardButton" class="button control" onmousedown='sendCommand("/forward"); return false;' onmouseup='sendCommand("/stop"); return false;'>Forward</button>
+  <button id="leftButton" class="button control" onmousedown='sendCommand("/left"); return false;' onmouseup='sendCommand("/stop"); return false;'>Left</button>
+  <button id="stopButton" class="button stop" onclick='sendCommand("/stop"); return false;'>Stop</button>
+  <button id="rightButton" class="button control" onmousedown='sendCommand("/right"); return false;' onmouseup='sendCommand("/stop"); return false;'>Right</button>
+  <button id="backwardButton" class="button control" onmousedown='sendCommand("/backward"); return false;' onmouseup='sendCommand("/stop"); return false;'>Backward</button>
+  <button id="danceButton" class="button special" onclick='sendCommand("/dance"); return false;'>Dance</button>
 </div>
 <iframe id="logFrame" srcdoc="<p>Command log initialized...</p>"></iframe>
 <script>
@@ -272,13 +318,21 @@ void moveForward() {
 }
 
 void moveBackward() {
-    Serial.println("Moving backward...");
-    digitalWrite(IN1_LEFT, LOW);
-    digitalWrite(IN2_LEFT, HIGH);
-    digitalWrite(IN1_RIGHT, LOW);
-    digitalWrite(IN2_RIGHT, HIGH);
-}
+    Serial.println("Checking for obstacles before moving backward...");
+    IR_Left_Value = digitalRead(IR_LEFT);
+    IR_Right_Value = digitalRead(IR_RIGHT);
 
+    if (IR_Left_Value == 0 || IR_Right_Value == 0) {
+        Serial.println("Obstacle detected at rear, stopping...");
+        stopMotors();  // Stop to prevent collision
+    } else {
+        Serial.println("Rear path clear, moving backward...");
+        digitalWrite(IN1_LEFT, LOW);
+        digitalWrite(IN2_LEFT, HIGH);
+        digitalWrite(IN1_RIGHT, LOW);
+        digitalWrite(IN2_RIGHT, HIGH);
+    }
+}
 void spinLeft() {
     Serial.println("Spinning left...");
     // Spin left: Right motor forward, Left motor backward
@@ -321,9 +375,9 @@ int getUltrasonicDistance() {
 void handleFrontObstacle() {
     Serial.println("Front obstacle detected, stopping...");
     stopMotors();
-    delay(500);
+    delay(1500);
     // Additional check for head clearance
-    if (distance < 50) {  // Assuming 50 cm is a safe stopping distance before head impact
+    if (distance < 30) {  // Assuming 50 cm is a safe stopping distance before head impact
         Serial.println("Obstacle might hit the head, extra precautions taken.");
         // Implement additional safety measures here
     } else {
@@ -340,7 +394,7 @@ void handleFrontObstacle() {
     } else {
         Serial.println("Rear path clear, reversing...");
         moveBackward();
-        delay(1000);
+        delay(2000);
         stopMotors();
     }
 }
@@ -352,7 +406,7 @@ void handleRearObstacle() {
     } else if (IR_Right_Value == 0) {
         spinLeft();
     }
-    delay(500);
+    delay(1500);
     moveForward();
 }
 
