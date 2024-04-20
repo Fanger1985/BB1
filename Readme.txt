@@ -1,5 +1,9 @@
 THESE ARE IN REVERSE ORDER WITH THE NEWEST BEING ON TOP!
 
+4-19-2024
+BB1 UPDATE!
+Successfully have the Tank Tread ESP32 Communicating with a Buzzer ESP32 which will be attached to more sensors. Both will ultmately be controlled by the pi 4 via mqtt.  
+Now have a 3rd W-Rover Board acting as a video streaming server.  kind of laggy tho. something more powerful would be better.
 
 4-02-2024
 BB1 Update!
