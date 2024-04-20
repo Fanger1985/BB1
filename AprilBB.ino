@@ -28,22 +28,47 @@ int lastLeftPulseCount = 0;
 int lastRightPulseCount = 0;
 int speedLeft = 255;  // Max speed
 int speedRight = 255; // Max speed
+volatile int leftHallPulseCount = 0;
+volatile int rightHallPulseCount = 0;
 
 // Web server on port 80
 WebServer server(80);
 
-// Forward declarations of functions
+// Forward declarations of ISR functions
+void IRAM_ATTR onLeftEncoder();
+void IRAM_ATTR onRightEncoder();
+void IRAM_ATTR onLeftHallSensor();
+void IRAM_ATTR onRightHallSensor();
+
+// Define ISR implementations
+void IRAM_ATTR onLeftEncoder() {
+    leftPulseCount++;
+}
+
+void IRAM_ATTR onRightEncoder() {
+    rightPulseCount++;
+}
+
+void IRAM_ATTR onLeftHallSensor() {
+    leftHallPulseCount++;
+}
+
+void IRAM_ATTR onRightHallSensor() {
+    rightHallPulseCount++;
+}
+
+// Global state variable to determine control mode
+volatile bool isManualControl = false;
+
+// Define all function prototypes here
 void moveForward();
 void moveBackward();
 void spinLeft();
 void spinRight();
 void stopMotors();
+void smoothStartMotors();
 int getUltrasonicDistance();
-// Forward declarations of ISR functions
-void IRAM_ATTR onLeftEncoder();
-void IRAM_ATTR onRightEncoder();
-// Global state variable to determine control mode
-volatile bool isManualControl = false;
+String controlPage();
 
 void setup() {
     Serial.begin(9600);
@@ -56,13 +81,21 @@ void setup() {
     pinMode(IR_LEFT, INPUT);
     pinMode(IR_RIGHT, INPUT);
 
-    // Correct the pin numbers for your setup if needed
-    attachInterrupt(digitalPinToInterrupt(IN1_LEFT), onLeftEncoder, RISING);
-    attachInterrupt(digitalPinToInterrupt(IN1_RIGHT), onRightEncoder, RISING);
+    // Hall sensor pins setup
+    pinMode(34, INPUT_PULLUP);  // Left motor hall sensor
+    pinMode(35, INPUT_PULLUP);  // Left motor hall sensor
+    pinMode(32, INPUT_PULLUP);  // Right motor hall sensor
+    pinMode(33, INPUT_PULLUP);  // Right motor hall sensor
 
-    // Connect to WiFi
+    // Attach interrupts for motor encoders and hall sensors
+    attachInterrupt(digitalPinToInterrupt(34), onLeftHallSensor, RISING);
+    attachInterrupt(digitalPinToInterrupt(35), onLeftHallSensor, RISING);
+    attachInterrupt(digitalPinToInterrupt(32), onRightHallSensor, RISING);
+    attachInterrupt(digitalPinToInterrupt(33), onRightHallSensor, RISING);
+
+    // WiFi connection setup
     WiFi.begin(ssid, password);
-    Serial.println("Connecting to WiFi");
+    Serial.println("Connecting to WiFi...");
     while (WiFi.status() != WL_CONNECTED) {
         delay(500);
         Serial.print(".");
@@ -106,7 +139,7 @@ void setup() {
         stopMotors();
         server.send(200, "text/plain", "Stopping");
     });
-        server.on("/auto", HTTP_GET, []() {
+    server.on("/auto", HTTP_GET, []() {
         isManualControl = false; // Allow the robot to move autonomously
         server.send(200, "text/plain", "Switched to auto mode");
     });
@@ -115,57 +148,62 @@ void setup() {
         exploreEnvironment();
         server.send(200, "text/plain", "Exploration mode activated");
     });
-
     server.on("/dance", HTTP_GET, []() {
         isManualControl = true; // Take manual control for the dance
         danceRoutine();
         server.send(200, "text/plain", "Dance sequence activated");
     });
+    server.on("/sensors", HTTP_GET, []() {
+        Serial.println("Sensor endpoint hit!");
+        IR_Left_Value = digitalRead(IR_LEFT);
+        IR_Right_Value = digitalRead(IR_RIGHT);
+        distance = getUltrasonicDistance();
 
-server.on("/sensors", HTTP_GET, []() {
-    Serial.println("Sensor endpoint hit!"); // Add this line
-  IR_Left_Value = digitalRead(IR_LEFT);
-  IR_Right_Value = digitalRead(IR_RIGHT);
-  distance = getUltrasonicDistance();
-
-  String sensorData = "{";
-  sensorData += "\"ir_left\":" + String(IR_Left_Value) + ",";
-  sensorData += "\"ir_right\":" + String(IR_Right_Value) + ",";
-  sensorData += "\"distance\":" + String(distance);
-  sensorData += "}";
-  server.send(200, "application/json", sensorData);
-});
-
+        String sensorData = "{";
+        sensorData += "\"ir_left\":" + String(IR_Left_Value) + ",";
+        sensorData += "\"ir_right\":" + String(IR_Right_Value) + ",";
+        sensorData += "\"distance\":" + String(distance);
+        sensorData += "}";
+        server.send(200, "application/json", sensorData);
+    });
 
     server.begin();
     Serial.println("HTTP server started. Ready for commands.");
 }
 
 
-// ISR implementations
-void IRAM_ATTR onLeftEncoder() {
-  leftPulseCount++;
+
+
+void smoothStartMotors() {
+    int targetSpeed = 255;
+    int increment = 10;
+
+    for (int speed = 0; speed <= targetSpeed; speed += increment) {
+        // Use direct GPIO manipulation for PWM-like behavior
+        for (int i = 0; i < 255; i++) {
+            digitalWrite(IN1_LEFT, i < speed ? HIGH : LOW);
+            digitalWrite(IN1_RIGHT, i < speed ? HIGH : LOW);
+            delayMicroseconds(1000); // This creates the PWM effect
+        }
+        delay(20); // Delay between increments to smooth out the transition
+    }
 }
 
-void IRAM_ATTR onRightEncoder() {
-  rightPulseCount++;
-}
 
 void loop() {
     server.handleClient();  // Handle client requests to the web server
 
     static unsigned long lastReportTime = 0;
     const unsigned long reportInterval = 1000;  // Report every 1000 milliseconds (1 second)
-    unsigned long currentTime = millis();
 
-    // Check if it's time to report the sensor status
-    if (currentTime - lastReportTime >= reportInterval) {
-        lastReportTime = currentTime;  // Update the last report time
+    if (!isManualControl) {
+        // Autonomous behavior
+        autoMove();
+    }
 
-        // Autonomous or manual control checks
-        if (!isManualControl) {
-            autoMove();  // Perform autonomous movements
-        }
+    // Check if it's time to report the IR sensor status and distance
+    if (millis() - lastReportTime >= reportInterval) {
+        lastReportTime = millis();  // Update the last report time
 
         // Read IR sensor values
         IR_Left_Value = digitalRead(IR_LEFT);
@@ -174,7 +212,7 @@ void loop() {
         // Get the current distance from the ultrasonic sensor
         distance = getUltrasonicDistance();
 
-        // Print IR sensor status and ultrasonic distance to the serial
+        // Report IR sensor status and ultrasonic distance
         Serial.print("IR Left Value: ");
         Serial.print(IR_Left_Value);
         Serial.print(" | IR Right Value: ");
@@ -185,91 +223,104 @@ void loop() {
     }
 }
 
-void autoMove() {
-    static unsigned long lastActionTime = 0;
-    static int state = 0;
-    unsigned long currentTime = millis();
 
-    // First, update sensor readings without delay
+void autoMove() {
     IR_Left_Value = digitalRead(IR_LEFT);
     IR_Right_Value = digitalRead(IR_RIGHT);
     distance = getUltrasonicDistance();
 
-    // State machine handling different movement phases
-    switch (state) {
-        case 0:  // Check surroundings
-            if (distance < 30) {
-                handleFrontObstacle();
-                state = 1;  // Go to thinking state after obstacle
-            } else if (IR_Left_Value == 0 || IR_Right_Value == 0) {
-                handleRearObstacle();
-                state = 1;
-            } else {
-                state = 2;  // Safe to move, decide action
-            }
-            lastActionTime = currentTime;
-            break;
-        case 1:  // Thinking pause state
-            if (currentTime - lastActionTime > 500) {
-                state = 2;
-            }
-            break;
-        case 2:  // Decide and act
-            int action = random(0, 100);
-            if (action < 20) {
-                moveForward();
-            } else if (action < 40) {
-                moveBackward();
-            } else if (action < 60) {
-                spinRight();
-            } else if (action < 80) {
-                spinLeft();
-            } else {
-                danceRoutine();
-            }
-            state = 0;
-            lastActionTime = currentTime;
-            break;
+    // Behavior based on distance
+    if (distance > 100 && !isManualControl) {
+        idleWander();  // If there's plenty of space, wander around idly
+    } else if (distance < 30) {
+        reactToCloseObstacle();  // If too close to an obstacle, back off
+    } else {
+        cautiousApproach();  // If moderate distance, approach cautiously
     }
+}
+
+void idleWander() {
+    // Randomly decide between various simple movements or staying still
+    int action = random(0, 100);
+    if (action < 10) {
+        // Move forward slightly
+        moveForward();
+        delay(random(500, 1000)); // Short forward movement
+    } else if (action < 20) {
+        // Quick turn left
+        spinLeft();
+        delay(200); // Very short spin
+    } else if (action < 30) {
+        // Quick turn right
+        spinRight();
+        delay(200); // Very short spin
+    }
+    stopMotors(); // Always stop after a small move
+}
+
+void reactToCloseObstacle() {
+    // Simple backup and quick turn
+    moveBackward();
+    delay(random(500, 1000)); // Quick backup
+    stopMotors();
+    
+    // Random quick turn after backup
+    if (random(0, 2)) {
+        spinLeft();
+        delay(200); // Quick spin
+    } else {
+        spinRight();
+        delay(200); // Quick spin
+    }
+    stopMotors();
+}
+
+void cautiousApproach() {
+    // Random choice between moving forward or a quick turn
+    if (random(0, 100) < 80) {
+        moveForward(); // Go straight forward most of the time
+    } else if (random(0, 2)) {
+        spinLeft(); // Occasionally turn left
+        delay(200); // Quick spin
+    } else {
+        spinRight(); // Occasionally turn right
+        delay(200); // Quick spin
+    }
+    delay(random(1000, 2000)); // Continue for a random duration
+    stopMotors();
 }
 
 void exploreEnvironment() {
-    static unsigned long lastActionTime = 0;
-    static int state = 0;
-    unsigned long currentTime = millis();
+    IR_Left_Value = digitalRead(IR_LEFT);
+    IR_Right_Value = digitalRead(IR_RIGHT);
+    distance = getUltrasonicDistance();
 
-    // Update sensor readings once at the start of each cycle
-    if (state == 0) {
-        IR_Left_Value = digitalRead(IR_LEFT);
-        IR_Right_Value = digitalRead(IR_RIGHT);
-        distance = getUltrasonicDistance();
-        state = 1;
+    // Analyze the environment and make decisions
+    if (distance > 100) {  // If there's a lot of space ahead, go explore it
+        moveForward();
+        delay(1000);  // Move forward for a bit
+    } else if (distance < 30) {  // Too close to something, need to decide direction
+        handleFrontObstacle();  // Handle it appropriately
     }
 
-    // State machine for non-blocking exploration
-    switch (state) {
-        case 1: // Analyze environment
-            if (distance > 100) {
-                moveForward();
-                lastActionTime = currentTime;
-                state = 2;
-            } else if (distance < 30) {
-                handleFrontObstacle();
-                state = 3;
-            }
-            break;
-        case 2: // Moving forward
-            if (currentTime - lastActionTime > 1000) {
-                state = 0;
-            }
-            break;
-        case 3: // Handling obstacle
-            if (currentTime - lastActionTime > 500) {
-                state = 0;
-            }
-            break;
+    // Check rear sensors for obstacles when choosing to back up
+    if (IR_Left_Value == 0 || IR_Right_Value == 0) {
+        handleRearObstacle();
+    } else if (random(0, 2) == 0) {  // Randomly decide to back up if all clear
+        moveBackward();
+        delay(500);
+    }
+
+    // Occasionally spin around to scan the area
+    if (random(0, 10) < 2) {
+        spinLeft();
+        delay(1000);
+    } else if (random(0, 10) < 2) {
+        spinRight();
+        delay(1000);
     }
 }
+
 
 String controlPage() {
     String html = R"(
@@ -382,11 +433,11 @@ void stopMotors() {
 
 int getUltrasonicDistance() {
     digitalWrite(TRIG_PIN, LOW);
-    delayMicroseconds(2); // Keep as it is needed for sensor timing
+    delayMicroseconds(2);
     digitalWrite(TRIG_PIN, HIGH);
-    delayMicroseconds(10); // Keep as it is needed for sensor timing
+    delayMicroseconds(10);
     digitalWrite(TRIG_PIN, LOW);
-    duration = pulseIn(ECHO_PIN, HIGH, 38000); // Timeout added to avoid waiting too long
+    duration = pulseIn(ECHO_PIN, HIGH);
     distance = duration * 0.034 / 2;
     Serial.print("Distance measured: ");
     Serial.println(distance);
@@ -394,52 +445,29 @@ int getUltrasonicDistance() {
 }
 
 void handleFrontObstacle() {
-    static unsigned long lastTime = 0;
-    unsigned long currentTime = millis();
-    static int state = 0;
-
-    switch (state) {
-        case 0: // Initial state, stop motors
-            stopMotors();
-            lastTime = currentTime;
-            state = 1;
-            break;
-        case 1: // Delay for reaction time
-            if (currentTime - lastTime > 1500) {
-                state = 2;
-            }
-            break;
-        case 2: // Check for head clearance and decide next step
-            if (distance < 30) { // Assuming 30 cm is too close
-                Serial.println("Obstacle might hit the head, extra precautions taken.");
-                state = 3; // Additional safety maneuvers
-            } else {
-                Serial.println("Lower obstacle detected, normal avoidance maneuver.");
-                state = 0; // Reset and allow normal operations
-                if (IR_Left_Value == 0 || IR_Right_Value == 0) {
-                    Serial.println("Obstacle detected at rear, spinning instead of reversing...");
-                    state = 4; // Choose spin direction
-                } else {
-                    Serial.println("Rear path clear, reversing...");
-                    moveBackward();
-                    state = 5; // Delay reversing
-                }
-            }
-            break;
-        case 4: // Spinning to avoid reversing onto obstacle
-            if (IR_Left_Value == 0) {
-                spinRight();
-            } else {
-                spinLeft();
-            }
-            state = 0; // Reset after spin
-            break;
-        case 5: // Delay for reversing
-            if (currentTime - lastTime > 2000) {
-                stopMotors();
-                state = 0; // Reset after reversing
-            }
-            break;
+    Serial.println("Front obstacle detected, stopping...");
+    stopMotors();
+    delay(1500);
+    // Additional check for head clearance
+    if (distance < 30) {  // Assuming 50 cm is a safe stopping distance before head impact
+        Serial.println("Obstacle might hit the head, extra precautions taken.");
+        // Implement additional safety measures here
+    } else {
+        Serial.println("Lower obstacle detected, normal avoidance maneuver.");
+    }
+    Serial.println("Checking rear path before reversing...");
+    if (IR_Left_Value == 0 || IR_Right_Value == 0) {
+        Serial.println("Obstacle detected at rear, spinning instead of reversing...");
+        if (IR_Left_Value == 0) {
+            spinRight();
+        } else {
+            spinLeft();
+        }
+    } else {
+        Serial.println("Rear path clear, reversing...");
+        moveBackward();
+        delay(2000);
+        stopMotors();
     }
 }
 
