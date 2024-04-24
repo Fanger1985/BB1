@@ -4,11 +4,15 @@
 #include <ArduinoJson.h> // Make sure to include this
 #include <vector>
 #include <map>
+#include <Wire.h> // I2C communication
+#include <MPU6050.h> // MPU6050 library
 
 // Global declarations
 std::vector<int> distances;
 std::vector<String> actions;
 int currentPosition = 0;  // Global position tracker
+// Declare 'score' variable
+int score = 0;
 
 std::map<int, std::vector<int>> environmentMap;  // Use std::vector<int> for multiple values
 
@@ -18,7 +22,7 @@ const char* password = "jeansrocket543";
 
 // Motor pin definitions
 #define IN1_LEFT 19
-#define IN2_LEFT 21
+#define IN2_LEFT 25//CHANGED FROM 21 MOVE WIRE
 #define IN1_RIGHT 5
 #define IN2_RIGHT 18
 
@@ -27,6 +31,12 @@ const char* password = "jeansrocket543";
 #define ECHO_PIN 17
 #define IR_LEFT 13 //REAR LEFT FACING AWAY FROM ROBOT
 #define IR_RIGHT 4 // REAR RIGHT FACING AWAY FROM ROBOT
+// MPU6050 declarations
+MPU6050 mpu; // Create MPU6050 object
+int16_t ax, ay, az; // Acceleration
+int16_t gx, gy, gz; // Gyroscope
+
+bool isStuck = false; // Flag to track if BB1 is stuck
 
 // Global variables for sensor readings and motor speed
 long duration;
@@ -87,6 +97,17 @@ bool initialDelayComplete = false;  // Track if the delay is completed
 void setup() {
     // Initialize serial communication and record the start time
     Serial.begin(9600);
+    
+    // Initialize I2C for MPU6050
+        Wire.begin(21, 22); // Initialize I2C with SDA and SCL pins (GPIO21 and GPIO22)
+    mpu.initialize(); // Initialize the MPU6050
+
+    if (!mpu.testConnection()) {
+        Serial.println("MPU6050 connection failed.");
+    } else {
+        Serial.println("MPU6050 connection successful.");
+    }
+
     startTime = millis();
 
     // Initialize motor and sensor pins
@@ -236,7 +257,14 @@ void smoothStartMotors() {
 
 void loop() {
     server.handleClient();  // Handle client requests to the web server
+    // Read MPU6050 sensor data
+    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz); // Read sensor data
 
+    // Check for sudden movements or changes in orientation
+    if (abs(ax) > 15000 || abs(ay) > 15000 || abs(az) > 15000) {
+        Serial.println("Sudden movement detected! Stopping motors.");
+        stopMotors();
+    }
     static unsigned long lastReportTime = 0;
     const unsigned long reportInterval = 1000;  // Report every 1000 milliseconds (1 second)
 
@@ -286,21 +314,60 @@ void handleExpressEmotion() {
     server.send(200, "text/plain", "Emotion received"); // Respond to the client
 }
 void autoMove() {
-    // Continue with the existing autonomous logic
-    IR_Left_Value = digitalRead(IR_LEFT);
-    IR_Right_Value = digitalRead(IR_RIGHT);
-    int distance = getUltrasonicDistance();
+    // Read MPU6050 data
+    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz); // Get acceleration and gyroscope data
 
-    if (distance > 100) {
-        idleWander();  // If there's plenty of space, wander around
-    } else if (distance < 30) {
-        reactToCloseObstacle();  // If too close to an obstacle, back off
-        calculateScore(false);  // Deduct points for encountering an obstacle
-    } else {
-        cautiousApproach();  // If moderate distance, approach cautiously
+    // Check for sudden movements or orientation changes
+    if (abs(ax) > 15000 || abs(ay) > 15000 || abs(az) > 15000) {
+        Serial.println("Significant acceleration detected! Stopping motors.");
+        stopMotors(); // Safety check to prevent potential damage
+        return;
     }
 
-    adjustBehavior();  // Adjust behavior based on score
+    if (abs(gx) > 15000 || abs(gy) > 15000 || abs(gz) > 15000) {
+        Serial.println("Significant angular rate change detected! Stopping motors.");
+        stopMotors(); // Safety check for sudden changes in orientation
+        return;
+    }
+
+    // Get ultrasonic distance
+    int distance = getUltrasonicDistance();
+
+    // Check if BB1 is stuck
+    if (distance > 100) { // If there's plenty of space ahead
+        moveForward(); // Command to move forward
+        delay(500); // Give it a moment to move
+
+        // Check if it's stuck by monitoring MPU6050 data
+        mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz); // Re-check sensor data
+
+        // If there's little movement after attempting to move forward
+        if (abs(ax) < 5000) { // Minimal acceleration could mean BB1 is stuck
+            Serial.println("BB1 appears to be stuck! Backing off and reassessing...");
+            stopMotors(); // Stop current motion
+            moveBackward(); // Try moving backward
+            delay(500); // Short delay for backing up
+            reactToCloseObstacle(); // Reassess and take alternative action
+            return; // Exit function to avoid further processing
+        } else {
+            Serial.println("BB1 is moving forward successfully.");
+        }
+    } else if (distance < 30) { // Too close to an obstacle
+        Serial.println("Obstacle detected, backing off...");
+        reactToCloseObstacle(); // Back off and find a new path
+        calculateScore(false); // Deduct points for obstacle detection
+    } else {
+        Serial.println("Moderate space, using cautious approach...");
+        cautiousApproach(); // Use cautious behavior in moderate space
+    }
+
+    // Adjust behavior based on score and sensor readings
+    if (score < 0) {
+        Serial.println("Low score, applying extra caution...");
+        cautiousApproach(); // Extra cautious approach for low score
+    } else {
+        idleWander(); // Continue wandering and exploring
+    }
 }
 
 unsigned long idleStartTime = 0;  // Track idle start time
@@ -739,7 +806,6 @@ void updateMap() {
     recordPath(currentDistance, "moveForward");
 }
 
-int score = 0;
 
 // Function to calculate score based on behavior
 void calculateScore(bool avoidedObstacle) {
