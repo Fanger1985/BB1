@@ -611,7 +611,7 @@ void handleFrontObstacle() {
     stopMotors();
     delay(1500);
     // Additional check for head clearance
-    if (distance < 30) {  // Assuming 50 cm is a safe stopping distance before head impact
+    if (distance < 40) {  // Assuming 50 cm is a safe stopping distance before head impact
         Serial.println("Obstacle might hit the head, extra precautions taken.");
         // Implement additional safety measures here
     } else {
@@ -658,40 +658,81 @@ bool checkSpaceForDance() {
 void danceRoutine() {
     Serial.println("Starting dance routine...");
 
-    // Dance move 1: Spin in place
-    Serial.println("Dance move 1: Spin right");
-    spinRight();
-    delay(1000);
-    Serial.println("Dance move 1: Spin left");
+    // Dance move 1: Figure 8 pattern
+    Serial.println("Dance move 1: Figure 8 pattern");
+    moveForward();
+    delay(1000);  // Move forward for a bit
     spinLeft();
-    delay(1000);
+    delay(1000);  // Spin left for 1 second
+    moveForward();
+    delay(1000);  // Continue forward
+    spinRight();
+    delay(1000);  // Spin right to complete the figure 8
     stopMotors();
 
-    // Dance move 2: Jiggle back and forth
-    Serial.println("Dance move 2: Jiggle back and forth");
+    // Dance move 2: Spinning with LED placeholder
+    Serial.println("Dance move 2: Extended spin with LED effect.");
+    spinLeft();
+    Serial.println("blink blink");  // Placeholder for LED effect
+    delay(3000);  // Spin for 3 seconds
+    stopMotors();
+
+    // Dance move 3: Directional jiggle
+    Serial.println("Dance move 3: Jiggle back and forth");
     for (int i = 0; i < 5; i++) {
         moveForward();
+        Serial.println("blink blink");  // Placeholder for LED effect
         delay(200);
         moveBackward();
         delay(200);
     }
-    stopMotors();
 
-    // Dance move 3: Circle spin
-    Serial.println("Dance move 3: Circle spin");
+    // Dance move 4: Circle spin
+    Serial.println("Dance move 4: Circle spin");
     spinRight();
-    delay(3000); // Longer spin
-    stopMotors();
-
-    // Dance move 4: Back and forth
-    Serial.println("Dance move 4: Move forward and backward");
-    moveForward();
-    delay(1000);
-    moveBackward();
-    delay(1000);
+    delay(3000);  // Longer spin to the right
     stopMotors();
 
     Serial.println("Dance routine complete!");
     server.send(200, "text/plain", "Dance complete");
-    isManualControl = false; // Ensure control state is reset after dancing
+    isManualControl = false;  // Reset manual control state after dancing
 }
+
+#include <vector>  // To use vectors for dynamic arrays
+
+std::vector<int> distances;  // Record distances as he moves
+std::vector<String> actions;  // Record actions taken at each point
+
+void recordPath() {
+    distances.push_back(getUltrasonicDistance());  // Record distance
+    actions.push_back("moveForward");  // Record action taken
+}
+
+
+#include <map>  // For storing a simple map of the environment
+
+std::map<int, int> environmentMap;  // Mapping distance and action
+int currentPosition = 0;  // Track BB1's position
+
+void updateMap() {
+    int currentDistance = getUltrasonicDistance();
+    environmentMap[currentPosition] = currentDistance;  // Store the distance at the current position
+    currentPosition++;  // Move to the next position
+}
+
+
+void navigate() {
+    int currentDistance = getUltrasonicDistance();
+    if (currentDistance < 30) {  // Close to an obstacle
+        if (environmentMap[currentPosition - 1] < 30) {
+            // Take a different path based on learned environment
+            spinRight();  // Example of adapting behavior
+            delay(500);
+        } else {
+            reactToCloseObstacle();  // Default behavior if no learned path
+        }
+    } else {
+        moveForward();  // Continue moving forward
+    }
+}
+
