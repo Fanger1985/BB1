@@ -2,6 +2,15 @@
 #include <WebServer.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h> // Make sure to include this
+#include <vector>
+#include <map>
+
+// Global declarations
+std::vector<int> distances;
+std::vector<String> actions;
+int currentPosition = 0;  // Global position tracker
+
+std::map<int, std::vector<int>> environmentMap;  // Use std::vector<int> for multiple values
 
 // Network credentials
 const char* ssid = "SpectrumSetup-DD";
@@ -186,6 +195,21 @@ server.on("/auto", HTTP_GET, []() {
 
         server.send(200, "application/json", sensorData);
     });
+server.on("/getData", HTTP_GET, []() {
+    String data = "{ \"distances\": [";
+    for (int d : distances) {
+        data += String(d) + ",";
+    }
+    data.remove(data.length() - 1);  // Remove trailing comma
+    data += "], \"actions\": [";
+    for (String a : actions) {
+        data += "\"" + a + "\",";
+    }
+    data.remove(data.length() - 1);  // Remove trailing comma
+    data += "] }";
+
+    server.send(200, "application/json", data);  // Send data in JSON format
+});
 
     server.on("/expressEmotion", HTTP_POST, handleExpressEmotion); // Separate function for POST handling
 
@@ -262,29 +286,23 @@ void handleExpressEmotion() {
     server.send(200, "text/plain", "Emotion received"); // Respond to the client
 }
 void autoMove() {
-    if (!initialDelayComplete) {
-        // Check if 15 seconds have passed since startup
-        if (millis() - startTime >= 15000) {
-            initialDelayComplete = true;  // Set flag to avoid further checks
-        } else {
-            // If still in the initial delay, do nothing to avoid auto movement
-            return;
-        }
-    }
-
-    // After the initial delay, continue with the regular auto-move logic
+    // Continue with the existing autonomous logic
     IR_Left_Value = digitalRead(IR_LEFT);
     IR_Right_Value = digitalRead(IR_RIGHT);
-    distance = getUltrasonicDistance();
+    int distance = getUltrasonicDistance();
 
     if (distance > 100) {
         idleWander();  // If there's plenty of space, wander around
     } else if (distance < 30) {
         reactToCloseObstacle();  // If too close to an obstacle, back off
+        calculateScore(false);  // Deduct points for encountering an obstacle
     } else {
         cautiousApproach();  // If moderate distance, approach cautiously
     }
+
+    adjustBehavior();  // Adjust behavior based on score
 }
+
 unsigned long idleStartTime = 0;  // Track idle start time
 bool isIdle = false;  // Flag to track if BB1 is idling
 
@@ -611,7 +629,7 @@ void handleFrontObstacle() {
     stopMotors();
     delay(1500);
     // Additional check for head clearance
-    if (distance < 40) {  // Assuming 50 cm is a safe stopping distance before head impact
+    if (distance < 50) {  // Assuming 50 cm is a safe stopping distance before head impact
         Serial.println("Obstacle might hit the head, extra precautions taken.");
         // Implement additional safety measures here
     } else {
@@ -698,41 +716,72 @@ void danceRoutine() {
     isManualControl = false;  // Reset manual control state after dancing
 }
 
-#include <vector>  // To use vectors for dynamic arrays
 
-std::vector<int> distances;  // Record distances as he moves
-std::vector<String> actions;  // Record actions taken at each point
 
-void recordPath() {
-    distances.push_back(getUltrasonicDistance());  // Record distance
-    actions.push_back("moveForward");  // Record action taken
+
+
+// Function to record the current path and action taken
+void recordPath(int distance, String action) {
+    distances.push_back(distance);
+    actions.push_back(action);
+    if (environmentMap.find(currentPosition) == environmentMap.end()) {
+        environmentMap[currentPosition] = {distance};  // Store the sensor data
+    } else {
+        environmentMap[currentPosition].push_back(distance);  // Append to existing data
+    }
+    currentPosition++;  // Increment position
 }
 
 
-#include <map>  // For storing a simple map of the environment
-
-std::map<int, int> environmentMap;  // Mapping distance and action
-int currentPosition = 0;  // Track BB1's position
 
 void updateMap() {
     int currentDistance = getUltrasonicDistance();
-    environmentMap[currentPosition] = currentDistance;  // Store the distance at the current position
-    currentPosition++;  // Move to the next position
+    recordPath(currentDistance, "moveForward");
+}
+
+int score = 0;
+
+// Function to calculate score based on behavior
+void calculateScore(bool avoidedObstacle) {
+    if (avoidedObstacle) {
+        score += 10;  // Reward for avoiding obstacle
+    } else {
+        score -= 10;  // Penalty for hitting obstacle
+    }
+}
+
+// Use this function to adjust behavior based on score
+void adjustBehavior() {
+    if (score < 0) {
+        // If score is low, take extra precautions
+        cautiousApproach();
+    } else {
+        // If score is high, continue normal operation
+        idleWander();
+    }
 }
 
 
+// Function for navigating
 void navigate() {
     int currentDistance = getUltrasonicDistance();
-    if (currentDistance < 30) {  // Close to an obstacle
-        if (environmentMap[currentPosition - 1] < 30) {
-            // Take a different path based on learned environment
-            spinRight();  // Example of adapting behavior
-            delay(500);
-        } else {
-            reactToCloseObstacle();  // Default behavior if no learned path
-        }
+
+    if (currentPosition > 0 && environmentMap[currentPosition - 1][0] < 30) {
+        spinRight();  // Adjust behavior based on learned environment
+        delay(500);
+    } else if (currentDistance < 30) {
+        reactToCloseObstacle();  // Default behavior when near obstacle
     } else {
-        moveForward();  // Continue moving forward
+        moveForward();  // Clear path, move forward
+    }
+}
+void manageMemory() {
+    const int maxDataSize = 100;  // Maximum number of elements to store
+
+    if (distances.size() > maxDataSize) {
+        distances.erase(distances.begin());  // Remove the oldest entry
+        actions.erase(actions.begin());  // Same for actions
+        environmentMap.erase(currentPosition - maxDataSize);  // Clear outdated data
     }
 }
 
