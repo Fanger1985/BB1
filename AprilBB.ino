@@ -1,5 +1,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
+#include <HTTPClient.h>
+#include <ArduinoJson.h> // Make sure to include this
 
 // Network credentials
 const char* ssid = "SpectrumSetup-DD";
@@ -70,8 +72,15 @@ void smoothStartMotors();
 int getUltrasonicDistance();
 String controlPage();
 
+unsigned long startTime = 0;  // Store the startup time
+bool initialDelayComplete = false;  // Track if the delay is completed
+
 void setup() {
+    // Initialize serial communication and record the start time
     Serial.begin(9600);
+    startTime = millis();
+
+    // Initialize motor and sensor pins
     pinMode(IN1_LEFT, OUTPUT);
     pinMode(IN2_LEFT, OUTPUT);
     pinMode(IN1_RIGHT, OUTPUT);
@@ -81,19 +90,19 @@ void setup() {
     pinMode(IR_LEFT, INPUT);
     pinMode(IR_RIGHT, INPUT);
 
-    // Hall sensor pins setup
-    pinMode(34, INPUT_PULLUP);  // Left motor hall sensor
-    pinMode(35, INPUT_PULLUP);  // Left motor hall sensor
-    pinMode(32, INPUT_PULLUP);  // Right motor hall sensor
-    pinMode(33, INPUT_PULLUP);  // Right motor hall sensor
+    // Setup Hall sensor pins
+    pinMode(34, INPUT_PULLUP);
+    pinMode(35, INPUT_PULLUP);
+    pinMode(32, INPUT_PULLUP);
+    pinMode(33, INPUT_PULLUP);
 
-    // Attach interrupts for motor encoders and hall sensors
+    // Attach interrupts for Hall sensors
     attachInterrupt(digitalPinToInterrupt(34), onLeftHallSensor, RISING);
     attachInterrupt(digitalPinToInterrupt(35), onLeftHallSensor, RISING);
     attachInterrupt(digitalPinToInterrupt(32), onRightHallSensor, RISING);
     attachInterrupt(digitalPinToInterrupt(33), onRightHallSensor, RISING);
 
-    // WiFi connection setup
+    // Establish WiFi connection
     WiFi.begin(ssid, password);
     Serial.println("Connecting to WiFi...");
     while (WiFi.status() != WL_CONNECTED) {
@@ -104,57 +113,67 @@ void setup() {
     Serial.print("IP Address: ");
     Serial.println(WiFi.localIP());
 
-    // Wait a few seconds before starting the main activities
+    // Introduce an initial delay before starting operations
     Serial.println("Preparing to start operations...");
-    delay(5000);  // Delay for 5 seconds before starting operations
+    delay(5000); // Gives time for initialization
 
-    // Setup web server routes
+    // Setup Web server routes
     server.on("/", HTTP_GET, []() {
-        isManualControl = false; // Allow auto-moving when visiting the main page
-        server.send(200, "text/html", controlPage()); // Send dynamic HTML content
+        server.send(200, "text/html", controlPage());
     });
 
-    server.on("/forward", HTTP_GET, []() {
-        isManualControl = true;
-        moveForward();
-        server.send(200, "text/plain", "Moving forward");
-    });
-    server.on("/backward", HTTP_GET, []() {
-        isManualControl = true;
-        moveBackward();
-        server.send(200, "text/plain", "Moving backward");
-    });
-    server.on("/left", HTTP_GET, []() {
-        isManualControl = true;
-        spinLeft();
-        server.send(200, "text/plain", "Turning left");
-    });
-    server.on("/right", HTTP_GET, []() {
-        isManualControl = true;
-        spinRight();
-        server.send(200, "text/plain", "Turning right");
-    });
-    server.on("/stop", HTTP_GET, []() {
-        isManualControl = true;
-        stopMotors();
-        server.send(200, "text/plain", "Stopping");
-    });
-    server.on("/auto", HTTP_GET, []() {
-        isManualControl = false; // Allow the robot to move autonomously
-        server.send(200, "text/plain", "Switched to auto mode");
-    });
+server.on("/forward", HTTP_GET, []() {
+    isManualControl = true; // Switch to manual control
+    moveForward(); // Move forward
+    server.send(200, "text/plain", "Moving forward");
+});
+
+server.on("/backward", HTTP_GET, []() {
+    isManualControl = true; // Switch to manual control
+    moveBackward(); // Move backward
+    server.send(200, "text/plain", "Moving backward");
+});
+
+server.on("/left", HTTP_GET, []() {
+    isManualControl = true; // Switch to manual control
+    spinLeft(); // Spin left
+    server.send(200, "text/plain", "Turning left");
+});
+
+server.on("/right", HTTP_GET, []() {
+    isManualControl = true; // Switch to manual control
+    spinRight(); // Spin right
+    server.send(200, "text/plain", "Turning right");
+});
+
+server.on("/stop", HTTP_GET, []() {
+    isManualControl = true; // Switch to manual control
+    stopMotors(); // Stop all motors
+    server.send(200, "text/plain", "Stopping");
+});
+
+server.on("/auto", HTTP_GET, []() {
+    isManualControl = false; // Switch to autonomous mode
+    server.send(200, "text/plain", "Switched to auto mode");
+});
+
+
     server.on("/explore", HTTP_GET, []() {
-        isManualControl = true; // Take manual control for exploration
         exploreEnvironment();
         server.send(200, "text/plain", "Exploration mode activated");
     });
+
     server.on("/dance", HTTP_GET, []() {
-        isManualControl = true; // Take manual control for the dance
         danceRoutine();
         server.send(200, "text/plain", "Dance sequence activated");
     });
+
+    server.on("/expressEmotion", HTTP_GET, []() {
+        expressEmotion("happy");
+        server.send(200, "text/plain", "Emotion expressed");
+    });
+
     server.on("/sensors", HTTP_GET, []() {
-        Serial.println("Sensor endpoint hit!");
         IR_Left_Value = digitalRead(IR_LEFT);
         IR_Right_Value = digitalRead(IR_RIGHT);
         distance = getUltrasonicDistance();
@@ -164,14 +183,15 @@ void setup() {
         sensorData += "\"ir_right\":" + String(IR_Right_Value) + ",";
         sensorData += "\"distance\":" + String(distance);
         sensorData += "}";
+
         server.send(200, "application/json", sensorData);
     });
 
-    server.begin();
+    server.on("/expressEmotion", HTTP_POST, handleExpressEmotion); // Separate function for POST handling
+
+    server.begin(); // Start the HTTP server
     Serial.println("HTTP server started. Ready for commands.");
 }
-
-
 
 
 void smoothStartMotors() {
@@ -223,40 +243,81 @@ void loop() {
     }
 }
 
+void handleExpressEmotion() {
+    String body = server.arg("plain");
+    DynamicJsonDocument doc(256); // Declare a document for deserialization
+    deserializeJson(doc, body); // Deserialize incoming JSON data
 
+    String emotion = doc["emotion"]; // Extract emotion from the JSON
+
+    // Determine the expression based on emotion
+    if (emotion == "happy") {
+        expressEmotion("happy");
+    } else if (emotion == "sad") {
+        expressEmotion("sad");
+    } else if (emotion == "startled") {
+        expressEmotion("startled");
+    }
+
+    server.send(200, "text/plain", "Emotion received"); // Respond to the client
+}
 void autoMove() {
+    if (!initialDelayComplete) {
+        // Check if 15 seconds have passed since startup
+        if (millis() - startTime >= 15000) {
+            initialDelayComplete = true;  // Set flag to avoid further checks
+        } else {
+            // If still in the initial delay, do nothing to avoid auto movement
+            return;
+        }
+    }
+
+    // After the initial delay, continue with the regular auto-move logic
     IR_Left_Value = digitalRead(IR_LEFT);
     IR_Right_Value = digitalRead(IR_RIGHT);
     distance = getUltrasonicDistance();
 
-    // Behavior based on distance
-    if (distance > 100 && !isManualControl) {
-        idleWander();  // If there's plenty of space, wander around idly
+    if (distance > 100) {
+        idleWander();  // If there's plenty of space, wander around
     } else if (distance < 30) {
         reactToCloseObstacle();  // If too close to an obstacle, back off
     } else {
         cautiousApproach();  // If moderate distance, approach cautiously
     }
 }
+unsigned long idleStartTime = 0;  // Track idle start time
+bool isIdle = false;  // Flag to track if BB1 is idling
 
 void idleWander() {
-    // Randomly decide between various simple movements or staying still
-    int action = random(0, 100);
-    if (action < 10) {
-        // Move forward slightly
-        moveForward();
-        delay(random(500, 1000)); // Short forward movement
-    } else if (action < 20) {
-        // Quick turn left
-        spinLeft();
-        delay(200); // Very short spin
-    } else if (action < 30) {
-        // Quick turn right
-        spinRight();
-        delay(200); // Very short spin
+    int action = random(0, 100);  // Random action selector
+
+    if (!isIdle) {
+        if (action < 20) {  // 20% chance to enter idle state
+            idleStartTime = millis();
+            isIdle = true;  // BB1 is now idling
+            return;  // Do nothing to simulate sitting still
+        } else if (action < 50) {  // 30% chance to move forward
+            moveForward();
+            delay(500);  // A small delay for movement, avoid long blocking
+            stopMotors();
+        } else if (action < 75) {  // 25% chance to spin left
+            spinLeft();
+            delay(300);
+            stopMotors();
+        } else {  // 25% chance to spin right
+            spinRight();
+            delay(300);
+            stopMotors();
+        }
+        expressEmotion("happy");
+    } else {
+        // If idling, check if enough time has passed
+        if (millis() - idleStartTime >= random(1000, 5000)) {
+            isIdle = false;  // Reset idle state
+        }
     }
-    stopMotors(); // Always stop after a small move
 }
+
 
 void reactToCloseObstacle() {
     // Simple backup and quick turn
@@ -274,20 +335,55 @@ void reactToCloseObstacle() {
     }
     stopMotors();
 }
+void expressEmotion(String emotion) {
+    if (emotion == "happy") {
+        // Play a happy sound or flash a bright LED
+        Serial.println("BB1 is happy!");
+        // Play sound or blink LEDs
+    } else if (emotion == "startled") {
+        Serial.println("BB1 is startled!");
+        // Play a startled sound or blink LEDs in a pattern
+    }
+}
+// Example function on the mobile unit to send HTTP requests to the buzzer unit
+void triggerEmotion(String emotion) {
+    HTTPClient http;
+    const char* buzzerUnitIP = "192.168.1.3";  // IP of the buzzer unit
+    String serverUrl = "http://" + String(buzzerUnitIP) + "/expressEmotion";  // Endpoint on the buzzer unit
+    
+    http.begin(serverUrl);  // Start the HTTP session
+    http.addHeader("Content-Type", "application/json");
+
+    // Create a JSON object with the emotion to be triggered
+    DynamicJsonDocument doc(256);
+    doc["emotion"] = emotion;
+
+    String jsonData;
+    serializeJson(doc, jsonData);
+
+    int httpCode = http.POST(jsonData);  // Send the POST request with the emotion data
+
+    if (httpCode == 200) {
+        Serial.println("Emotion triggered successfully!");
+    } else {
+        Serial.print("Failed to trigger emotion, HTTP code: ");
+        Serial.println(httpCode);
+    }
+
+    http.end();  // End the HTTP session
+}
 
 void cautiousApproach() {
-    // Random choice between moving forward or a quick turn
-    if (random(0, 100) < 80) {
-        moveForward(); // Go straight forward most of the time
-    } else if (random(0, 2)) {
-        spinLeft(); // Occasionally turn left
-        delay(200); // Quick spin
+    int distance = getUltrasonicDistance();
+    if (distance > 100) {
+        moveForward(); // Safe to move forward
+        expressEmotion("happy");
+    } else if (distance < 30) {
+        reactToCloseObstacle(); // React to close obstacle
+        expressEmotion("startled");
     } else {
-        spinRight(); // Occasionally turn right
-        delay(200); // Quick spin
+        idleWander(); // Cautious wandering
     }
-    delay(random(1000, 2000)); // Continue for a random duration
-    stopMotors();
 }
 
 void exploreEnvironment() {
@@ -328,56 +424,122 @@ String controlPage() {
 <head>
 <title>ESP32 Robot Control</title>
 <style>
-  body { font-family: Arial, sans-serif; background: #e0e5ec; display: flex; flex-direction: column; align-items: center; height: 100vh; margin: 0; }
-  .button { border: none; border-radius: 12px; padding: 20px 40px; font-size: 16px; color: #fff; cursor: pointer; outline: none; margin: 10px; }
-  .stop { background: #ff4136; }
-  .control { background: #7fdbff; }
-  .special { background: #85144b; }
-  .button:active { color: #000; }
-  #controlGrid { display: grid; grid-template-rows: auto auto auto; grid-template-columns: auto auto auto; justify-content: center; align-items: center; grid-gap: 10px; }
-  #autoButton { grid-column: 1; grid-row: 1; }
-  #exploreButton { grid-column: 3; grid-row: 1; }
-  #forwardButton { grid-column: 2; grid-row: 1; }
-  #leftButton { grid-column: 1; grid-row: 2; }
-  #stopButton { grid-column: 2; grid-row: 2; }
-  #rightButton { grid-column: 3; grid-row: 2; }
-  #backwardButton { grid-column: 2; grid-row: 3; }
-  #danceButton { grid-column: 1; grid-row: 3; }
-  iframe { width: 80%; height: 200px; border-radius: 12px; border: none; margin-top: 20px; }
+  body { 
+    font-family: Arial, sans-serif; 
+    background: #e0e5ec; 
+    display: flex; 
+    flex-direction: column; 
+    align-items: center; 
+    height: 100vh; 
+    margin: 0; 
+  }
+  .button { 
+    border: none; 
+    border-radius: 12px; 
+    padding: 20px 40px; 
+    font-size: 16px; 
+    color: #fff; 
+    cursor: pointer; 
+    outline: none; 
+    margin: 10px; 
+  }
+  .stop { 
+    background: #ff4136; 
+  }
+  .control { 
+    background: #7fdbff; 
+  }
+  .special { 
+    background: #85144b; 
+  }
+  .button:active { 
+    color: #000; 
+  }
+  #controlGrid { 
+    display: grid; 
+    grid-template-rows: repeat(3, auto); 
+    grid-template-columns: repeat(3, auto); 
+    justify-content: center; 
+    align-items: center; 
+    gap: 10px; 
+  }
+  #autoButton { 
+    grid-column: 1; 
+    grid-row: 1; 
+  }
+  #exploreButton { 
+    grid-column: 3; 
+    grid-row: 1; 
+  }
+  #forwardButton { 
+    grid-column: 2; 
+    grid-row: 1; 
+  }
+  #leftButton { 
+    grid-column: 1; 
+    grid-row: 2; 
+  }
+  #stopButton { 
+    grid-column: 2; 
+    grid-row: 2; 
+  }
+  #rightButton { 
+    grid-column: 3; 
+    grid-row: 2; 
+  }
+  #backwardButton { 
+    grid-column: 2; 
+    grid-row: 3; 
+  }
+  #danceButton { 
+    grid-column: 1; 
+    grid-row: 3; 
+  }
+  #expressEmotionButton { 
+    grid-column: 3; 
+    grid-row: 3; 
+  }
 </style>
 </head>
 <body>
 <h1>Robot Control Interface</h1>
 <div id="controlGrid">
-  <button id="autoButton" class="button special" onclick='sendCommand("/auto"); return false;'>Auto</button>
-  <button id="exploreButton" class="button special" onclick='sendCommand("/explore"); return false;'>Explore</button>
-  <button id="forwardButton" class="button control" onmousedown='sendCommand("/forward"); return false;' onmouseup='sendCommand("/stop"); return false;'>Forward</button>
-  <button id="leftButton" class="button control" onmousedown='sendCommand("/left"); return false;' onmouseup='sendCommand("/stop"); return false;'>Left</button>
-  <button id="stopButton" class="button stop" onclick='sendCommand("/stop"); return false;'>Stop</button>
-  <button id="rightButton" class="button control" onmousedown='sendCommand("/right"); return false;' onmouseup='sendCommand("/stop"); return false;'>Right</button>
-  <button id="backwardButton" class="button control" onmousedown='sendCommand("/backward"); return false;' onmouseup='sendCommand("/stop"); return false;'>Backward</button>
-  <button id="danceButton" class="button special" onclick='sendCommand("/dance"); return false;'>Dance</button>
+  <button class="button special" id="autoButton" onclick='sendCommand("/auto"); return false;'>Auto</button>
+  <button class="button special" id="exploreButton" onclick='sendCommand("/explore"); return false;'>Explore</button>
+  <button class="button control" id="forwardButton" onmousedown='sendCommand("/forward"); return false;' onmouseup='sendCommand("/stop"); return false;'>Forward</button>
+  <button class="button control" id="leftButton" onmousedown='sendCommand("/left"); return false;' onmouseup='sendCommand("/stop"); return false;'>Left</button>
+  <button class="button stop" id="stopButton" onclick='sendCommand("/stop"); return false;'>Stop</button>
+  <button class="button control" id="rightButton" onmousedown='sendCommand("/right"); return false;' onmouseup='sendCommand("/stop"); return false;'>Right</button>
+  <button class="button control" id="backwardButton" onmousedown='sendCommand("/backward"); return false;' onmouseup='sendCommand("/stop"); return false;'>Backward</button>
+  <button class="button special" id="danceButton" onclick='sendCommand("/dance"); return false;'>Dance</button>
+  <button class="button special" id="expressEmotionButton" onclick='sendCommand("/expressEmotion"); return false;'>Express Emotion</button>
 </div>
 <iframe id="logFrame" srcdoc="<p>Command log initialized...</p>"></iframe>
 <script>
 function sendCommand(command) {
-  var xhr = new XMLHttpRequest();
-  xhr.open('GET', command, true);
-  xhr.onreadystatechange = function() {
-    if (xhr.readyState == 4 && xhr.status == 200) {
-      document.getElementById('logFrame').contentWindow.document.body.innerHTML += '<p>' + command + ' command executed.</p>';
-    }
-  };
-  xhr.send();
-  return false; // Prevent default action, stop navigation
+    var xhr = new XMLHttpRequest(); // Create a new XMLHttpRequest object
+    xhr.open('GET', command, true); // Open the GET request to the command endpoint
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState == XMLHttpRequest.DONE) { // Check if the request is complete
+            if (xhr.status == 200) { // Check if the status is OK
+                var logFrame = document.getElementById("logFrame");
+                var logDocument = logFrame.contentDocument || logFrame.contentWindow.document;
+                logDocument.body.innerHTML += "<p>" + command + " command executed.</p>";
+            } else {
+                console.error("Failed to execute command: " + xhr.status); // Log an error if the request fails
+            }
+        }
+    };
+    xhr.send(); // Send the GET request
+    return false; // Prevent default action, stop navigation
 }
+
 </script>
 </body>
 </html>
 )";
     return html;
 }
-
 
 
 // Define motor control and sensor reading functions...
