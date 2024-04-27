@@ -22,7 +22,7 @@ const char* password = "jeansrocket543";
 
 // Motor pin definitions
 #define IN1_LEFT 19
-#define IN2_LEFT 25//CHANGED FROM 21 MOVE WIRE
+#define IN2_LEFT 15//CHANGED FROM 21 MOVE WIRE
 #define IN1_RIGHT 5
 #define IN2_RIGHT 18
 
@@ -31,10 +31,15 @@ const char* password = "jeansrocket543";
 #define ECHO_PIN 17
 #define IR_LEFT 13 //REAR LEFT FACING AWAY FROM ROBOT
 #define IR_RIGHT 4 // REAR RIGHT FACING AWAY FROM ROBOT
+
+#define PIR_SENSOR_PIN 12 // Change to 14 if needed
+
 // MPU6050 declarations
 MPU6050 mpu; // Create MPU6050 object
 int16_t ax, ay, az; // Acceleration
 int16_t gx, gy, gz; // Gyroscope
+// Manual Control State
+volatile bool isManualControl = true;
 
 bool isStuck = false; // Flag to track if BB1 is stuck
 
@@ -78,9 +83,6 @@ void IRAM_ATTR onRightHallSensor() {
     rightHallPulseCount++;
 }
 
-// Global state variable to determine control mode
-volatile bool isManualControl = false;
-
 // Define all function prototypes here
 void moveForward();
 void moveBackward();
@@ -99,15 +101,23 @@ void setup() {
     Serial.begin(9600);
     
     // Initialize I2C for MPU6050
-        Wire.begin(21, 22); // Initialize I2C with SDA and SCL pins (GPIO21 and GPIO22)
-    mpu.initialize(); // Initialize the MPU6050
+    Wire.begin();  // Initialize I2C communication
+    mpu.initialize();  // Initialize the MPU6050
+    
+    pinMode(PIR_SENSOR_PIN, INPUT); // Set the PIR sensor pin as input
+    
+    // Set accelerometer range (example: ±8g)
+    mpu.setFullScaleAccelRange(MPU6050_ACCEL_FS_8);
 
+    // Set gyroscope range (example: ±1000°/s)
+    mpu.setFullScaleGyroRange(MPU6050_GYRO_FS_1000);
+
+    // Check if MPU6050 is working correctly
     if (!mpu.testConnection()) {
         Serial.println("MPU6050 connection failed.");
     } else {
         Serial.println("MPU6050 connection successful.");
     }
-
     startTime = millis();
 
     // Initialize motor and sensor pins
@@ -198,6 +208,12 @@ server.on("/auto", HTTP_GET, []() {
         server.send(200, "text/plain", "Dance sequence activated");
     });
 
+server.on("/human_detected", HTTP_GET, []() {
+    int pirState = digitalRead(PIR_SENSOR_PIN);
+    String response = pirState == HIGH ? "Human detected" : "No human detected";
+    server.send(200, "text/plain", response);
+});
+
     server.on("/expressEmotion", HTTP_GET, []() {
         expressEmotion("happy");
         server.send(200, "text/plain", "Emotion expressed");
@@ -257,34 +273,69 @@ void smoothStartMotors() {
 
 void loop() {
     server.handleClient();  // Handle client requests to the web server
-    // Read MPU6050 sensor data
-    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz); // Read sensor data
+    
+    // Check if a human is detected
+    int pirState = digitalRead(PIR_SENSOR_PIN);
+    
+    if (pirState == HIGH) { // If human is detected
+        Serial.println("Human detected! Expressing happiness...");
+        
+        expressEmotion("happy"); // Express happiness (e.g., play sound, flash LED)
+        
+        // Following behavior with ultrasonic sensor
+        int followDistance = getUltrasonicDistance(); // Distance to the person
+        
+        if (followDistance > 100) { // If the person is far, move forward
+            moveForward(); // Move towards the person
+            delay(500); // Adjust movement
+        } else if (followDistance < 30) { // If it's too close, stop
+            stopMotors(); // Prevent collisions
+        } else {
+            stopMotors(); // Maintain a safe distance
+        }
+        
+        // Obstacle detection with ultrasonic sensor
+        if (followDistance < 30) { // If there's an obstacle
+            Serial.println("Obstacle detected, stopping and finding a new path...");
+            stopMotors(); // Stop to avoid collision
+            reactToCloseObstacle(); // Take evasive action
+        }
 
-    // Check for sudden movements or changes in orientation
-    if (abs(ax) > 15000 || abs(ay) > 15000 || abs(az) > 15000) {
+        // If obstacle is cleared, resume following
+        if (followDistance >= 100) { 
+            Serial.println("Obstacle cleared, resuming following...");
+            moveForward(); // Resume following
+        }
+
+        updateMap(); // Keep the environment map updated
+    } else {
+        // Autonomous behavior when not following
+        if (!isManualControl) {
+            Serial.println("Exploring the environment...");
+            autoMove(); // Continue exploring and mapping
+        }
+    }
+
+    // Safety checks with MPU6050
+    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz); // Sudden movement detection
+    
+    if (abs(ax) > 15000 || abs(ay) > 15000 || abs(az) > 15000) { // If sudden movement
         Serial.println("Sudden movement detected! Stopping motors.");
-        stopMotors();
+        stopMotors(); // Safety measure
     }
+
+    // Regular sensor data reporting
     static unsigned long lastReportTime = 0;
-    const unsigned long reportInterval = 1000;  // Report every 1000 milliseconds (1 second)
-
-    if (!isManualControl) {
-        // Autonomous behavior
-        autoMove();
-    }
-
-    // Check if it's time to report the IR sensor status and distance
-    if (millis() - lastReportTime >= reportInterval) {
-        lastReportTime = millis();  // Update the last report time
-
-        // Read IR sensor values
-        IR_Left_Value = digitalRead(IR_LEFT);
+    const unsigned long reportInterval = 1000; // Report every 1000 milliseconds
+    
+    if (millis() - lastReportTime >= reportInterval) { // Time to report sensor data
+        lastReportTime = millis(); // Update report time
+        
+        IR_Left_Value = digitalRead(IR_LEFT); // IR sensor values
         IR_Right_Value = digitalRead(IR_RIGHT);
 
-        // Get the current distance from the ultrasonic sensor
-        distance = getUltrasonicDistance();
+        distance = getUltrasonicDistance(); // Get the current distance
 
-        // Report IR sensor status and ultrasonic distance
         Serial.print("IR Left Value: ");
         Serial.print(IR_Left_Value);
         Serial.print(" | IR Right Value: ");
@@ -292,8 +343,12 @@ void loop() {
         Serial.print(" | Distance: ");
         Serial.print(distance);
         Serial.println(" cm");
+        
+        recordPath(distance, "sensor update"); // Record path and sensor data
+        updateMap(); // Keep the environment map updated
     }
 }
+
 
 void handleExpressEmotion() {
     String body = server.arg("plain");
@@ -314,61 +369,49 @@ void handleExpressEmotion() {
     server.send(200, "text/plain", "Emotion received"); // Respond to the client
 }
 void autoMove() {
-    // Read MPU6050 data
-    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz); // Get acceleration and gyroscope data
+      adjustBehaviorBasedOnScore();
+    // Read MPU6050 data for sudden changes
+    mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz);
 
     // Check for sudden movements or orientation changes
     if (abs(ax) > 15000 || abs(ay) > 15000 || abs(az) > 15000) {
         Serial.println("Significant acceleration detected! Stopping motors.");
-        stopMotors(); // Safety check to prevent potential damage
+        stopMotors(); // Safety check to prevent damage
         return;
     }
 
     if (abs(gx) > 15000 || abs(gy) > 15000 || abs(gz) > 15000) {
         Serial.println("Significant angular rate change detected! Stopping motors.");
-        stopMotors(); // Safety check for sudden changes in orientation
+        stopMotors(); // Safety check for sudden orientation change
         return;
     }
 
     // Get ultrasonic distance
     int distance = getUltrasonicDistance();
 
-    // Check if BB1 is stuck
-    if (distance > 100) { // If there's plenty of space ahead
-        moveForward(); // Command to move forward
-        delay(500); // Give it a moment to move
-
-        // Check if it's stuck by monitoring MPU6050 data
-        mpu.getMotion6(&ax, &ay, &az, &gx, &gy, &gz); // Re-check sensor data
-
-        // If there's little movement after attempting to move forward
-        if (abs(ax) < 5000) { // Minimal acceleration could mean BB1 is stuck
-            Serial.println("BB1 appears to be stuck! Backing off and reassessing...");
-            stopMotors(); // Stop current motion
-            moveBackward(); // Try moving backward
-            delay(500); // Short delay for backing up
-            reactToCloseObstacle(); // Reassess and take alternative action
-            return; // Exit function to avoid further processing
-        } else {
-            Serial.println("BB1 is moving forward successfully.");
-        }
-    } else if (distance < 30) { // Too close to an obstacle
-        Serial.println("Obstacle detected, backing off...");
+    if (distance > 100) { // If there's plenty of space
+        Serial.println("Open space, initiating idle wander...");
+        idleWander(); // Idle wander in open spaces
+    } else if (distance < 30) { // Close to an obstacle
+        Serial.println("Obstacle detected, initiating cautious approach...");
         reactToCloseObstacle(); // Back off and find a new path
         calculateScore(false); // Deduct points for obstacle detection
     } else {
-        Serial.println("Moderate space, using cautious approach...");
-        cautiousApproach(); // Use cautious behavior in moderate space
+        // Safe zone, allow BB1 to explore and move freely
+        Serial.println("Moderate space, continuing cautious approach...");
+        cautiousApproach(); // Proceed with caution
     }
 
-    // Adjust behavior based on score and sensor readings
+    // Adjust behavior based on score and environment
     if (score < 0) {
         Serial.println("Low score, applying extra caution...");
         cautiousApproach(); // Extra cautious approach for low score
     } else {
-        idleWander(); // Continue wandering and exploring
+        Serial.println("High score, exploring freely...");
+        idleWander(); // Continue casual wandering
     }
 }
+
 
 unsigned long idleStartTime = 0;  // Track idle start time
 bool isIdle = false;  // Flag to track if BB1 is idling
@@ -472,34 +515,33 @@ void cautiousApproach() {
 }
 
 void exploreEnvironment() {
-    IR_Left_Value = digitalRead(IR_LEFT);
-    IR_Right_Value = digitalRead(IR_RIGHT);
-    distance = getUltrasonicDistance();
+    int frontDistance = getUltrasonicDistance();  // Front distance
+    int IR_Left_Value = digitalRead(IR_LEFT);  // Left sensor
+    int IR_Right_Value = digitalRead(IR_RIGHT);  // Right sensor
 
-    // Analyze the environment and make decisions
-    if (distance > 100) {  // If there's a lot of space ahead, go explore it
-        moveForward();
+    if (frontDistance > 100) {  // If there's a lot of space ahead
+        moveForward();  // Safe to move forward
+        recordPath(frontDistance, "moveForward");  // Record the path
         delay(1000);  // Move forward for a bit
-    } else if (distance < 30) {  // Too close to something, need to decide direction
-        handleFrontObstacle();  // Handle it appropriately
+    } else if (frontDistance < 30) {  // Too close to something, change direction
+        reactToCloseObstacle();  // Handle the obstacle appropriately
+        recordPath(frontDistance, "spinLeft");  // Record the action
     }
 
-    // Check rear sensors for obstacles when choosing to back up
-    if (IR_Left_Value == 0 || IR_Right_Value == 0) {
-        handleRearObstacle();
-    } else if (random(0, 2) == 0) {  // Randomly decide to back up if all clear
-        moveBackward();
-        delay(500);
-    }
-
-    // Occasionally spin around to scan the area
-    if (random(0, 10) < 2) {
+    // Occasionally spin to get a broader view of the environment
+    if (random(0, 10) < 2) {  // 20% chance to spin left
         spinLeft();
+        recordPath(frontDistance, "spinLeft");
         delay(1000);
-    } else if (random(0, 10) < 2) {
+    } else if (random(0, 10) < 2) {  // 20% chance to spin right
         spinRight();
+        recordPath(frontDistance, "spinRight");
         delay(1000);
     }
+
+    // Update the environment map with current position
+    currentPosition++;
+    updateMap();  // Update the environment map with new data
 }
 
 
@@ -806,27 +848,37 @@ void updateMap() {
     recordPath(currentDistance, "moveForward");
 }
 
+void adjustBehavior() {
+    if (score < 0) {
+        Serial.println("Low score, applying extra caution...");
+        cautiousApproach();  // Extra cautious approach for low score
+    } else {
+        Serial.println("High score, exploring freely...");
+        idleWander();  // Continue casual wandering
+    }
+}
 
-// Function to calculate score based on behavior
 void calculateScore(bool avoidedObstacle) {
     if (avoidedObstacle) {
         score += 10;  // Reward for avoiding obstacle
     } else {
         score -= 10;  // Penalty for hitting obstacle
     }
-}
 
-// Use this function to adjust behavior based on score
-void adjustBehavior() {
-    if (score < 0) {
-        // If score is low, take extra precautions
-        cautiousApproach();
-    } else {
-        // If score is high, continue normal operation
-        idleWander();
+    adjustBehavior();  // Adjust behavior based on the updated score
+}
+void adjustBehaviorBasedOnScore() {
+    if (score < -10) {
+        Serial.println("Score very low, reverting to idle wander...");
+        idleWander();  // Revert to idle wander when score is low
+    } else if (score >= 0 && score < 10) {
+        Serial.println("Moderate score, cautious approach...");
+        cautiousApproach();  // Apply cautious approach when score is moderate
+    } else if (score >= 10) {
+        Serial.println("High score, exploring freely...");
+        idleWander();  // Allow free wandering for high scores
     }
 }
-
 
 // Function for navigating
 void navigate() {
@@ -842,12 +894,24 @@ void navigate() {
     }
 }
 void manageMemory() {
-    const int maxDataSize = 100;  // Maximum number of elements to store
+    const int maxMapSize = 100;  // Maximum size for the environment map
 
-    if (distances.size() > maxDataSize) {
-        distances.erase(distances.begin());  // Remove the oldest entry
-        actions.erase(actions.begin());  // Same for actions
-        environmentMap.erase(currentPosition - maxDataSize);  // Clear outdated data
+    // Remove old entries if the map grows too large
+    if (environmentMap.size() > maxMapSize) {
+        auto oldestKey = environmentMap.begin()->first;  // Get the oldest key
+        environmentMap.erase(oldestKey);  // Remove the oldest entry
     }
 }
+#define MAX_BUFFER_SIZE 100  // Maximum size for the circular buffer
 
+// Circular buffer for distances and actions
+int distanceBuffer[MAX_BUFFER_SIZE];
+String actionBuffer[MAX_BUFFER_SIZE];
+int bufferIndex = 0;  // Current index in the circular buffer
+
+void addDataToBuffer(int distance, String action) {
+    // Add data to the buffer and update the index
+    distanceBuffer[bufferIndex] = distance;
+    actionBuffer[bufferIndex] = action;
+    bufferIndex = (bufferIndex + 1) % MAX_BUFFER_SIZE;  // Wrap around if needed
+}
