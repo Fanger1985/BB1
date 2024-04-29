@@ -4,10 +4,11 @@ import time
 
 # Setup the GPIO for servo control
 pi = pigpio.pi()
-servo_pin = 18  # Change to your GPIO pin connected to the servo
+servo_pin1 = 12  # GPIO pin for the first servo
+servo_pin2 = 13  # GPIO pin for the second servo
 
 # Set servo position function
-def set_servo_position(angle):
+def set_servo_position(servo_pin, angle):
     pulsewidth = int((angle * 11.11) + 500)  # Convert angle to pulse width
     pi.set_servo_pulsewidth(servo_pin, pulsewidth)
 
@@ -25,13 +26,16 @@ try:
             faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(30, 30))
             
             if len(faces) > 0:
-                print("Face detected! Wiggling the servo...")
-                set_servo_position(90)  # Move servo to 90 degrees
+                print("Face detected! Wiggling the servos...")
+                set_servo_position(servo_pin1, 90)  # Move first servo to 90 degrees
+                set_servo_position(servo_pin2, 90)  # Move second servo to 90 degrees
                 time.sleep(1)  # Pause for a second
-                set_servo_position(45)  # Move servo to 45 degrees
+                set_servo_position(servo_pin1, 45)  # Move first servo to 45 degrees
+                set_servo_position(servo_pin2, 45)  # Move second servo to 45 degrees
                 time.sleep(1)  # Pause for a second
             else:
-                set_servo_position(0)  # Reset servo position when no face is detected
+                set_servo_position(servo_pin1, 0)  # Reset first servo position when no face is detected
+                set_servo_position(servo_pin2, 0)  # Reset second servo position when no face is detected
         else:
             print("Failed to capture frame")
         
@@ -40,4 +44,3 @@ finally:
     camera.release()
     pi.stop()  # Cleanup the GPIO
     print("Cleanup complete, camera and GPIO released.")
-
