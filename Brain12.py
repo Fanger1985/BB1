@@ -192,10 +192,12 @@ async def autonomous_exploration():
     if camera is None:
         logging.error("Failed to initialize camera.")
         return
+    
     try:
         while True:
             image = capture_image(camera)
             if image is not None:
+                # Fetch sensor data and process it
                 sensor_data = await get_current_sensor_data()
                 if sensor_data.size == 3:
                     image_input = np.expand_dims(image, axis=0).astype(np.float32)
@@ -206,7 +208,7 @@ async def autonomous_exploration():
                     predictions = interpreter.get_tensor(output_details[0]['index'])
                     if predictions.size > 0:
                         direction = np.argmax(predictions)
-                        await move_robot(direction)
+                        await control_robot(direction)  # Directly control robot based on AI prediction
                     else:
                         logging.error("No predictions from model")
                 else:
@@ -220,6 +222,7 @@ async def autonomous_exploration():
         if camera:
             camera.release()
             logging.info("Camera resource has been released.")
+
 
 async def main():
     while True:
@@ -244,6 +247,7 @@ if __name__ == "__main__":
         asyncio.run(main())
     finally:
         cleanup()
+
 
 
 
