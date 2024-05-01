@@ -31,43 +31,54 @@ def load_map_from_file():
         logging.error(f"Failed to load map from file: {e}")
         return {}
 
+# Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Base URL for the ESP32 Web server
 esp32_base_url = "http://192.168.1.2"
 
+# Initialize pigpio for precise PWM servo control
 pi = pigpio.pi()
 
+# Mapping and Position Data
 environment_map = {}
-current_position = (0, 0)
+current_position = (0, 0)  # Simulated current position as (x, y) coordinates
 
+# Initialize Kalman Filter
 def create_kalman_filter():
     kf = KalmanFilter(dim_x=2, dim_z=1)
-    kf.x = np.array([0., 0.])
-    kf.F = np.array([[1., 1.], [0., 1.]])
-    kf.H = np.array([[1., 0.]])
-    kf.P *= 1000.
-    kf.R = 5
-    kf.Q = Q_discrete_white_noise(dim=2, dt=1., var=0.1)
+    kf.x = np.array([0., 0.])  # Initial state (location and velocity)
+    kf.F = np.array([[1., 1.],  # State transition matrix
+                     [0., 1.]])
+    kf.H = np.array([[1., 0.]])  # Measurement function
+    kf.P *= 1000.                 # Covariance matrix
+    kf.R = 5                      # Measurement noise
+    kf.Q = Q_discrete_white_noise(dim=2, dt=1., var=0.1)  # Process noise
     return kf
 
 kf = create_kalman_filter()
 
+# Load TFLite model and allocate tensors
 dir_path = os.path.dirname(os.path.realpath(__file__))
 model_path = os.path.join(dir_path, "mobilenet_v2_1.0_224.tflite")
 interpreter = tflite.Interpreter(model_path=model_path)
 interpreter.allocate_tensors()
+
+# Get input and output details
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
 def initialize_camera():
-    camera = cv2.VideoCapture(0)
+    # Initialize the camera
+    camera = cv2.VideoCapture(0)  # Assuming a simple USB camera
     return camera
 
 def capture_image(camera):
     try:
         ret, frame = camera.read()
         if ret:
-            return process_image(frame)
+            processed_image = process_image(frame)
+            return processed_image
         else:
             logging.error("Failed to capture image from camera.")
             return None
@@ -76,16 +87,18 @@ def capture_image(camera):
         return None
 
 def process_image(frame):
+    # Convert to RGB and resize for MobileNetV2
     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     resized = cv2.resize(rgb, (224, 224))
     return resized
 
 async def send_http_get(endpoint):
-    url = f"{esp32_base_url}/{endpoint}"
+    url = f"{esp32_base_url}/{endpoint}"  # Make sure the URL is properly formed
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
                 if response.status == 200:
+                    logging.info(f"GET request to {url} succeeded")
                     return await response.json()
                 else:
                     logging.error(f"GET request to {url} failed with status {response.status}")
@@ -100,13 +113,25 @@ async def fetch_sensor_data_from_esp32():
             async with session.get(esp32_base_url + endpoint) as response:
                 if response.status == 200:
                     data = await response.json()
-                    return np.array([data['ir_left'], data['ir_right'], data['distance']])
+                    # Interpret sensor values based on ESP32 logic
+                    ir_left = int(data['ir_left'])
+                    ir_right = int(data['ir_right'])
+                    distance = int(data['distance'])
+                    # Example of handling based on ESP32 logic
+                    if distance < 20:
+                        logging.info("Obstacle very close. Taking evasive action.")
+                        # Insert logic to handle close obstacles
+                    elif ir_left == 0 or ir_right == 0:
+                        logging.info("Edge detected. Adjusting path.")
+                        # Insert logic for edge detection
+                    return (ir_left, ir_right, distance)
                 else:
                     logging.error(f"Failed to fetch sensor data with status {response.status}")
-                    return np.zeros(3)
+                    return None
     except Exception as e:
         logging.error(f"Exception when fetching sensor data: {e}")
-        return np.zeros(3)
+        return None
+
 
 async def get_current_sensor_data():
     esp32_sensor_data = await fetch_sensor_data_from_esp32()
@@ -120,7 +145,8 @@ async def move_robot(direction):
     try:
         response = await send_http_get(command_url)
         if response.get('status') == 'ok':
-            measurement = response.get('sensor_data', {}).get('distance', 0)
+            sensor_data = response.get('sensor_data', {})
+            measurement = sensor_data.get('distance', 0)
             kf.predict()
             kf.update(np.array([measurement]))
             update_position(direction_map[direction], kf.x[0])
@@ -137,14 +163,15 @@ async def move_robot(direction):
 def update_position(direction, estimated_position):
     global current_position
     direction_to_offset = {"forward": (0, 1), "backward": (0, -1), "left": (-1, 0), "right": (1, 0)}
-    current_position = (current_position[0] + direction_to_offset[direction][0], current_position[1] + direction_to_offset[direction][1])
+    offset = direction_to_offset[direction]
+    current_position = (current_position[0] + offset[0], current_position[1] + offset[1])
 
 def update_map(position, data):
     environment_map[position] = data
 
 async def autonomous_exploration():
     camera = initialize_camera()
-    if not camera:
+    if camera is None:
         logging.error("Failed to initialize camera.")
         return
     try:
@@ -152,7 +179,7 @@ async def autonomous_exploration():
             image = capture_image(camera)
             if image is not None:
                 sensor_data = await get_current_sensor_data()
-                if sensor_data.size == 3:
+                if sensor_data.size == 3 and not np.any(np.isnan(sensor_data)):
                     image_input = np.expand_dims(image, axis=0).astype(np.float32)
                     sensor_input = np.expand_dims(sensor_data, axis=0).astype(np.float32)
                     interpreter.set_tensor(input_details[0]['index'], image_input)
@@ -165,9 +192,10 @@ async def autonomous_exploration():
                     else:
                         logging.error("No predictions from model")
                 else:
-                    logging.error("Received incomplete sensor data")
+                    logging.warning("Incomplete or invalid sensor data received. Defaulting to safe mode.")
+                    await move_robot('stop')  # Default action can be to stop or any other safe operation
             else:
-                logging.error("Failed to capture image")
+                logging.error("Failed to capture image.")
             await asyncio.sleep(1)
     except Exception as e:
         logging.error(f"Error during autonomous exploration loop: {e}")
@@ -176,23 +204,28 @@ async def autonomous_exploration():
             camera.release()
             logging.info("Camera resource has been released.")
 
+
 async def main():
     global environment_map
     environment_map = load_map_from_file()
     await autonomous_exploration()
 
 def cleanup():
-    if pi:
-        if pi.connected:
-            pi.set_servo_pulsewidth(12, 0)
-            pi.set_servo_pulsewidth(13, 0)
-            pi.stop()
+    try:
+        if pi is not None:
+            if pi.connected:
+                pi.set_servo_pulsewidth(12, 0)
+                pi.set_servo_pulsewidth(13, 0)
+                pi.stop()
+            else:
+                logging.info("Pigpio not connected.")
         logging.info("Cleanup complete. GPIO and servos are now safe.")
-    else:
-        logging.info("Pigpio not connected.")
+    except Exception as e:
+        logging.error(f"Error during cleanup: {e}")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     finally:
         cleanup()
+
