@@ -115,13 +115,15 @@ async def fetch_sensor_data_from_esp32():
             async with session.get(esp32_base_url + endpoint) as response:
                 if response.status == 200:
                     data = await response.json()
-                    return np.array(data['sensor_values'])
+                    # Create an array with the necessary sensor data
+                    sensor_values = np.array([data['ir_left'], data['ir_right'], data['distance']])
+                    return sensor_values
                 else:
                     logging.error(f"Failed to fetch sensor data with status {response.status}")
-                    return np.zeros(5)
+                    return np.zeros(3)  # Assuming you expect three sensor readings
     except Exception as e:
         logging.error(f"Error fetching sensor data from ESP32: {e}")
-        return np.zeros(5)
+        return np.zeros(3)
 
 def get_local_sensor_data():
     local_sensor_data = np.random.rand(3)
@@ -180,7 +182,7 @@ async def autonomous_exploration():
             image = capture_image(camera)
             if image is not None:
                 sensor_data = await get_current_sensor_data()
-                if sensor_data.size > 0:
+                if sensor_data.size == 3:  # Make sure you're getting exactly 3 data points
                     image_input = np.expand_dims(image, axis=0).astype(np.float32)
                     sensor_input = np.expand_dims(sensor_data, axis=0).astype(np.float32)
                     interpreter.set_tensor(input_details[0]['index'], image_input)
@@ -193,7 +195,7 @@ async def autonomous_exploration():
                     else:
                         logging.error("No predictions from model")
                 else:
-                    logging.error("Received empty sensor data.")
+                    logging.error(f"Received incomplete sensor data: {sensor_data}")
             else:
                 logging.error("Failed to capture image.")
             await asyncio.sleep(1)
@@ -203,6 +205,7 @@ async def autonomous_exploration():
         if camera:
             camera.release()
             logging.info("Camera resource has been released.")
+
 
 async def main():
     global environment_map
