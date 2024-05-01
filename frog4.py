@@ -25,46 +25,52 @@ async def send_http_get(endpoint):
                 logging.error(f"Failed to GET {url} with status {response.status}")
                 return None
 
+# Function to fetch and handle gyroscope and accelerometer data
+async def fetch_motion_data():
+    motion_data = await send_http_get("motion")
+    if motion_data:
+        ax, ay, az = motion_data['ax'], motion_data['ay'], motion_data['az']
+        gx, gy, gz = motion_data['gx'], motion_data['gy'], motion_data['gz']
+        # Implement motion processing logic here
+        process_motion_data(ax, ay, az, gx, gy, gz)
+
+def process_motion_data(ax, ay, az, gx, gy, gz):
+    # Here you would implement checks for stability and sudden movements
+    logging.info(f"Processing motion data: ax={ax}, ay={ay}, az={az}, gx={gx}, gy={gy}, gz={gz}")
+
 # Command control function for the robot
 async def control_robot(command):
     await send_http_get(command)
 
-# Fetch sensor and gyroscope data
-async def get_robot_data():
-    sensor_data = await send_http_get("sensors")
-    gyro_data = await send_http_get("gyro")
-    return sensor_data, gyro_data
-
-# Obstacle reaction based on sensor data
-async def react_to_obstacle(sensor_data):
-    distance = sensor_data.get("distance", 100)
-    if distance < 30:
-        await control_robot("stop")
-        await asyncio.sleep(1)
-        await control_robot("left")  # Simplified reaction: always turn left
-        await asyncio.sleep(1)
-        await control_robot("stop")
-
-# Update environment map with the current sensor data
-def update_environment_map(current_position, sensor_data):
-    environment_map[current_position] = sensor_data
-
-# Monitor environment and respond to changes
+# Fetch sensor data and make decisions based on it
 async def monitor_environment():
     while True:
-        sensor_data, gyro_data = await get_robot_data()
-        current_position = gyro_data.get("position", {})  # Assuming position is tracked by gyro
-        update_environment_map(current_position, sensor_data)
-        await react_to_obstacle(sensor_data)
+        sensor_data = await send_http_get("sensors")
+        process_sensor_data(sensor_data)
         await asyncio.sleep(1)
 
-# Main routine
+def process_sensor_data(data):
+    if data:
+        distance = data.get('distance')
+        if distance < 30:  # For example, if too close to an obstacle
+            asyncio.create_task(control_robot("stop"))
+        else:
+            asyncio.create_task(control_robot("forward"))
+        # Update your environment map here
+        update_environment_map(data)
+
+def update_environment_map(data):
+    position = data.get('position')  # Assuming position data is available
+    environment_map[position] = data
+
 async def main():
     logging.info("Starting enhanced robot control script")
-    # Task to monitor environment
+    # Start monitoring tasks
     monitor_task = asyncio.create_task(monitor_environment())
-    await asyncio.sleep(3600)  # Keep the script running for an hour
-    monitor_task.cancel()  # Optionally stop the monitoring task
+    motion_task = asyncio.create_task(fetch_motion_data())
+    await asyncio.sleep(3600)  # Run for 1 hour
+    monitor_task.cancel()
+    motion_task.cancel()
 
 if __name__ == "__main__":
     asyncio.run(main())
