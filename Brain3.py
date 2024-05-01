@@ -93,17 +93,19 @@ def process_image(frame):
     return resized
 
 async def send_http_get(endpoint):
+    url = f"{esp32_base_url}/{endpoint}"  # Make sure the URL is properly formed
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(esp32_base_url + endpoint) as response:
+            async with session.get(url) as response:
                 if response.status == 200:
-                    logging.info(f"GET request to {endpoint} succeeded")
+                    logging.info(f"GET request to {url} succeeded")
                     return await response.json()
                 else:
-                    logging.error(f"GET request to {endpoint} failed with status {response.status}")
+                    logging.error(f"GET request to {url} failed with status {response.status}")
     except Exception as e:
-        logging.error(f"Error sending HTTP GET request: {e}")
+        logging.error(f"Error sending HTTP GET request to {url}: {e}")
     return {}
+
 
 async def fetch_sensor_data_from_esp32():
     endpoint = "sensors"
@@ -168,31 +170,48 @@ def update_map(position, data):
 
 async def autonomous_exploration():
     camera = initialize_camera()
+    if camera is None:
+        logging.error("Failed to initialize camera.")
+        return
+
     try:
         while True:
             image = capture_image(camera)
             if image is not None:
                 sensor_data = await get_current_sensor_data()
-                # Preprocess input data to match the model's input shape
-                image_input = np.expand_dims(image, axis=0).astype(np.float32)
-                sensor_input = np.expand_dims(sensor_data, axis=0).astype(np.float32)
+                if sensor_data.size > 0:  # Ensure sensor data array is not empty
+                    # Preprocess input data to match the model's input shape
+                    image_input = np.expand_dims(image, axis=0).astype(np.float32)
+                    sensor_input = np.expand_dims(sensor_data, axis=0).astype(np.float32)
 
-                # Set the input tensor
-                interpreter.set_tensor(input_details[0]['index'], image_input)
-                interpreter.set_tensor(input_details[1]['index'], sensor_input)
+                    # Ensure the interpreter and tensors are ready
+                    if interpreter and input_details and output_details:
+                        # Set the input tensor
+                        interpreter.set_tensor(input_details[0]['index'], image_input)
+                        interpreter.set_tensor(input_details[1]['index'], sensor_input)
 
-                # Run the model
-                interpreter.invoke()
+                        # Run the model
+                        interpreter.invoke()
 
-                # Extract the output
-                predictions = interpreter.get_tensor(output_details[0]['index'])
-                direction = np.argmax(predictions)
-                await move_robot(direction)
-            await asyncio.sleep(1)
+                        # Extract the output
+                        predictions = interpreter.get_tensor(output_details[0]['index'])
+                        direction = np.argmax(predictions)
+                        success = await move_robot(direction)
+                        if not success:
+                            logging.error("Failed to move robot.")
+                    else:
+                        logging.error("Interpreter or tensor details not properly initialized.")
+                else:
+                    logging.error("Received empty sensor data.")
+            else:
+                logging.error("Failed to capture image.")
+            await asyncio.sleep(1)  # Prevent too frequent updates; adjust as necessary beans
     except Exception as e:
         logging.error(f"Error during autonomous exploration loop: {e}")
     finally:
-        camera.release()
+        if camera:
+            camera.release()
+            logging.info("Camera resource has been released.")
 
 async def main():
     try:
@@ -204,10 +223,10 @@ async def main():
 
 def cleanup():
     try:
-        save_map_to_file()
-        pi.set_servo_pulsewidth(12, 0)
-        pi.set_servo_pulsewidth(13, 0)
-        pi.stop()
+        if pi is not None:  # Ensure 'pi' is not None before calling methods on it
+            pi.set_servo_pulsewidth(12, 0)
+            pi.set_servo_pulsewidth(13, 0)
+            pi.stop()
         logging.info("Cleanup complete. GPIO and servos are now safe.")
     except Exception as e:
         logging.error(f"Error during cleanup: {e}")
@@ -217,3 +236,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     finally:
         cleanup()
+
