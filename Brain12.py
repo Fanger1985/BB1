@@ -93,7 +93,8 @@ def process_image(frame):
     return resized
 
 async def send_http_get(endpoint):
-    url = f"{esp32_base_url}/{endpoint}"  # Make sure the URL is properly formed
+    url = f"{esp32_base_url}{endpoint}"
+    logging.info(f"Attempting to access {url}")
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
@@ -105,6 +106,7 @@ async def send_http_get(endpoint):
     except Exception as e:
         logging.error(f"Error sending HTTP GET request to {url}: {e}")
     return {}
+
 
 async def fetch_sensor_data_from_esp32():
     endpoint = "/sensors"
@@ -143,35 +145,28 @@ async def get_current_sensor_data():
 
 async def move_robot(direction):
     direction_map = {'forward': '/forward', 'backward': '/backward', 'left': '/left', 'right': '/right'}
-    command_url = f"{esp32_base_url}/{direction_map.get(direction, '')}"
-
-    if not direction_map.get(direction):
+    endpoint = direction_map.get(direction)
+    
+    if not endpoint:
         logging.error(f"Invalid move command: {direction}")
         return False
 
+    full_url = f"{esp32_base_url}{endpoint}"  # Form the full URL here
+
     try:
-        response = await send_http_get(command_url)
+        response = await send_http_get(endpoint)  # Use the full URL in the function
         if response and response.get('status') == 'ok':
             logging.info(f"Robot moved {direction} successfully.")
-
-            # Simulate sensor data processing and update Kalman filter
-            sensor_data = response.get('sensor_data', {})
-            measurement = float(sensor_data.get('distance', 0))
-            kf.predict()
-            kf.update(np.array([measurement]))
-
-            # Update robot's estimated position based on the direction moved
-            update_position(direction, kf.x[0])
-            update_map(current_position, sensor_data)
-            
             return True
         else:
-            error_status = response.get('status') if response else 'No response'
+            error_status = response.get('status', 'No response received')
             logging.error(f"Failed to move {direction} with status: {error_status}")
             return False
     except Exception as e:
-        logging.error(f"Exception occurred while trying to move robot {direction}: {e}")
+        logging.error(f"Exception while moving robot {direction}: {e}")
         return False
+
+
 
 def update_position(direction, move_distance):
     # Update the current position based on the direction and distance moved
