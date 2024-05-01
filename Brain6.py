@@ -108,27 +108,30 @@ async def send_http_get(endpoint):
 
 async def fetch_sensor_data_from_esp32():
     endpoint = "/sensors"
-    retries = 3
-    while retries > 0:
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(esp32_base_url + endpoint) as response:
-                    if response.status == 200:
-                        raw_data = await response.text()
-                        try:
-                            data = json.loads(raw_data)
-                            sensor_values = np.array([data['ir_left'], data['ir_right'], data['distance']])
-                            return sensor_values
-                        except json.JSONDecodeError as e:
-                            logging.error(f"JSON parsing error: {e} with data: {raw_data}")
-                            retries -= 1
-                    else:
-                        logging.error(f"Failed to fetch sensor data with status {response.status}")
-                        retries -= 1
-        except Exception as e:
-            logging.error(f"Error fetching sensor data from ESP32: {e}")
-            retries -= 1
-    return np.zeros(3)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(esp32_base_url + endpoint) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    # Interpret sensor values based on ESP32 logic
+                    ir_left = int(data['ir_left'])
+                    ir_right = int(data['ir_right'])
+                    distance = int(data['distance'])
+                    # Example of handling based on ESP32 logic
+                    if distance < 20:
+                        logging.info("Obstacle very close. Taking evasive action.")
+                        # Insert logic to handle close obstacles
+                    elif ir_left == 0 or ir_right == 0:
+                        logging.info("Edge detected. Adjusting path.")
+                        # Insert logic for edge detection
+                    return (ir_left, ir_right, distance)
+                else:
+                    logging.error(f"Failed to fetch sensor data with status {response.status}")
+                    return None
+    except Exception as e:
+        logging.error(f"Exception when fetching sensor data: {e}")
+        return None
+
 
 async def get_current_sensor_data():
     esp32_sensor_data = await fetch_sensor_data_from_esp32()
@@ -223,3 +226,4 @@ if __name__ == "__main__":
         asyncio.run(main())
     finally:
         cleanup()
+
