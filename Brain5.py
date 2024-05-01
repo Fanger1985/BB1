@@ -108,20 +108,22 @@ async def send_http_get(endpoint):
     return {}
 
 
-async def fetch_sensor_data():
+async def fetch_sensor_data_from_esp32():
+    endpoint = "/sensors"
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(f"{esp32_base_url}/sensors") as response:
+            async with session.get(esp32_base_url + endpoint) as response:
                 if response.status == 200:
                     data = await response.json()
-                    return np.array([data['ir_left'], data['ir_right'], data['distance']], dtype=float)
+                    # Parse the JSON object into an array of sensor values
+                    sensor_values = np.array([data['ir_left'], data['ir_right'], data['distance']])
+                    return sensor_values
                 else:
-                    logging.error("Failed to fetch sensor data")
-                    return np.zeros(3)
+                    logging.error(f"Failed to fetch sensor data with status {response.status}")
+                    return np.zeros(3)  # Return an array of zeros if the fetch fails
     except Exception as e:
-        logging.error(f"Exception in fetch_sensor_data: {e}")
+        logging.error(f"Error fetching sensor data from ESP32: {e}")
         return np.zeros(3)
-
 
 
 def get_local_sensor_data():
@@ -231,6 +233,5 @@ if __name__ == "__main__":
         asyncio.run(main())
     finally:
         cleanup()
-
 
 
