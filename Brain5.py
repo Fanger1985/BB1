@@ -115,15 +115,16 @@ async def fetch_sensor_data_from_esp32():
             async with session.get(esp32_base_url + endpoint) as response:
                 if response.status == 200:
                     data = await response.json()
-                    # Create an array with the necessary sensor data
+                    # Parse the JSON object into an array of sensor values
                     sensor_values = np.array([data['ir_left'], data['ir_right'], data['distance']])
                     return sensor_values
                 else:
                     logging.error(f"Failed to fetch sensor data with status {response.status}")
-                    return np.zeros(3)  # Assuming you expect three sensor readings
+                    return np.zeros(3)  # Return an array of zeros if the fetch fails
     except Exception as e:
         logging.error(f"Error fetching sensor data from ESP32: {e}")
         return np.zeros(3)
+
 
 def get_local_sensor_data():
     local_sensor_data = np.random.rand(3)
