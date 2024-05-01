@@ -178,33 +178,25 @@ async def autonomous_exploration():
     try:
         while True:
             image = capture_image(camera)
-if image is not None:
-    sensor_data = await get_current_sensor_data()
-    if sensor_data.size > 0:
-        image_input = np.expand_dims(image, axis=0).astype(np.float32)
-        sensor_input = np.expand_dims(sensor_data, axis=0).astype(np.float32)
-
-        print("Input shapes:", image_input.shape, sensor_input.shape)  # Debugging shapes
-
-        if interpreter and input_details and output_details:
-            interpreter.set_tensor(input_details[0]['index'], image_input)
-            interpreter.set_tensor(input_details[1]['index'], sensor_input)
-
-            interpreter.invoke()
-
-            predictions = interpreter.get_tensor(output_details[0]['index'])
-            if predictions.size > 0:
-                direction = np.argmax(predictions)
-                await move_robot(direction)
+            if image is not None:
+                sensor_data = await get_current_sensor_data()
+                if sensor_data.size > 0:
+                    image_input = np.expand_dims(image, axis=0).astype(np.float32)
+                    sensor_input = np.expand_dims(sensor_data, axis=0).astype(np.float32)
+                    interpreter.set_tensor(input_details[0]['index'], image_input)
+                    interpreter.set_tensor(input_details[1]['index'], sensor_input)
+                    interpreter.invoke()
+                    predictions = interpreter.get_tensor(output_details[0]['index'])
+                    if predictions.size > 0:
+                        direction = np.argmax(predictions)
+                        await move_robot(direction)
+                    else:
+                        logging.error("No predictions from model")
+                else:
+                    logging.error("Received empty sensor data.")
             else:
-                print("No predictions from model")  # Debug output
-        else:
-            logging.error("Interpreter or tensor details not properly initialized.")
-    else:
-        logging.error("Received empty sensor data.")
-else:
-    logging.error("Failed to capture image.")
-            await asyncio.sleep(1)  # Prevent too frequent updates; adjust as necessary beans
+                logging.error("Failed to capture image.")
+            await asyncio.sleep(1)
     except Exception as e:
         logging.error(f"Error during autonomous exploration loop: {e}")
     finally:
@@ -213,12 +205,10 @@ else:
             logging.info("Camera resource has been released.")
 
 async def main():
-    try:
-        global environment_map
-        environment_map = load_map_from_file()
-        await autonomous_exploration()
-    finally:
-        cleanup()
+    global environment_map
+    environment_map = load_map_from_file()
+    await autonomous_exploration()
+
 
 def cleanup():
     try:
@@ -239,5 +229,6 @@ if __name__ == "__main__":
         asyncio.run(main())
     finally:
         cleanup()
+
 
 
