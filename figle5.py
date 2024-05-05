@@ -1,0 +1,149 @@
+import aiohttp
+import asyncio
+import cv2
+import numpy as np
+import random
+import logging
+import threading
+import json
+
+# Setup basic logging
+logging.basicConfig(filename='bb1_learning.log', level=logging.INFO, format='%(asctime)s:%(levelname)s:%(message)s')
+
+# Configuration
+esp32_base_url = "http://192.168.1.100/"
+num_distance_states = 10
+presence_states = 2
+states = range(num_distance_states * presence_states)
+actions = ['forward', 'backward', 'left', 'right', 'stop', 'return_home']
+Q = np.zeros((len(states), len(actions)))
+alpha = 0.1
+gamma = 0.6
+epsilon = 1.0
+epsilon_decay = 0.995
+epsilon_min = 0.1
+home_base_location = None
+
+def save_q_table():
+    """Saves the Q-table to a file."""
+    with open("Q_table.json", "w") as f:
+        json.dump(Q.tolist(), f)
+
+def load_q_table():
+    """Loads the Q-table from a file."""
+    global Q
+    try:
+        with open("Q_table.json", "r") as f:
+            Q = np.array(json.load(f))
+    except FileNotFoundError:
+        logging.info("No previous Q-table found, starting fresh.")
+
+def update_q_table(state, action_index, reward, new_state):
+    """Update the Q-value for a given state and action."""
+    old_value = Q[state, action_index]
+    future_optimal_value = np.max(Q[new_state])  # Best Q-value for the next state
+    # Q-learning formula to update the Q-value of the current state and action
+    Q[state, action_index] = old_value + alpha * (reward + gamma * future_optimal_value - old_value)
+
+
+async def send_http_get(session, endpoint):
+    """Sends a GET request to the specified endpoint on the ESP32."""
+    try:
+        async with session.get(f"{esp32_base_url}{endpoint}") as response:
+            if response.status == 200:
+                return await response.json() if 'json' in response.headers.get('Content-Type', '') else await response.text()
+            else:
+                logging.error(f"Failed to execute {endpoint}: {response.status}")
+                return None
+    except Exception as e:
+        logging.error(f"Error during HTTP GET to {endpoint}: {str(e)}")
+        return None
+
+async def get_state_from_sensors(session):
+    """Retrieves sensor data from ESP32 and calculates the current state index."""
+    response = await send_http_get(session, "sensors")
+    if response:
+        distance = response.get('distance', 100)
+        ir_left = response.get('ir_left', 0)
+        ir_right = response.get('ir_right', 0)
+
+        distance_state = min(int(distance / 10), num_distance_states - 1)
+        ir_state = 1 if ir_left > 0 or ir_right > 0 else 0
+        state = distance_state + (num_distance_states * ir_state)
+        return state
+    return 0  # Return a default state if no data
+
+def start_face_tracking():
+    """Starts a separate thread for tracking faces using the webcam."""
+    face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+    cap = cv2.VideoCapture(0)
+
+    def tracking():
+        global home_base_location
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            faces = face_cascade.detectMultiScale(gray, 1.1, 4)
+            if len(faces) > 0 and home_base_location is None:
+                home_base_location = {"x": faces[0][0], "y": faces[0][1]}
+                logging.info(f"Home base set at: {home_base_location}")
+        cap.release()
+
+    threading.Thread(target=tracking).start()
+
+async def navigate_to_home_base(session):
+    """Navigates the robot back to the home base location using learned Q-values."""
+    if home_base_location:
+        current_state = await get_state_from_sensors(session)
+        while current_state != home_base_location:
+            action = actions[np.argmax(Q[current_state])]
+            await send_http_get(session, action)
+            current_state = await get_state_from_sensors(session)
+            logging.info(f"Navigating back to home base, current state: {current_state}")
+        logging.info("Returned to home base.")
+    else:
+        logging.error("Home base location is not set.")
+
+async def robot_behavior(session):
+    """Main behavior loop for the robot, applying Q-learning for decision making."""
+    global epsilon
+    load_q_table()  # Load the Q-table if it exists
+    state = await get_state_from_sensors(session)  # Get initial state from sensors
+
+    while True:
+        # Epsilon-greedy strategy for action selection
+        action_index = np.argmax(Q[state]) if random.random() > epsilon else random.randint(0, len(actions) - 1)
+        action = actions[action_index]
+
+        # Send the chosen action to the ESP32
+        await send_http_get(session, action)
+
+        # Observe the new state after taking the action
+        new_state = await get_state_from_sensors(session)
+
+        # Simulate receiving a reward based on the state transition
+        reward = 1 if new_state != state else -1  # Example: simple reward, customize based on your requirements
+
+        # Update the Q-table using the observed reward and the new state
+        update_q_table(state, action_index, reward, new_state)
+
+        # Update the current state
+        state = new_state
+
+        # Decay epsilon to reduce the amount of exploration over time
+        epsilon = max(epsilon_min, epsilon * epsilon_decay)
+
+        # Occasionally save the Q-table to disk
+        if random.random() < 0.05:
+            save_q_table()
+            logging.info("Q-table saved.")
+
+async def main():
+    async with aiohttp.ClientSession() as session:
+        start_face_tracking()
+        await robot_behavior(session)
+
+if __name__ == "__main__":
+    asyncio.run(main())
