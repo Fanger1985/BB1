@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Controlled ESP32 Servo</title>
+    <style>
+        body {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background: #e0e0e0;
+            font-family: Arial, sans-serif;
+        }
+        .container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background: #e0e0e0;
+            padding: 20px;
+            border-radius: 20px;
+            box-shadow: 20px 20px 60px #bebebe, -20px -20px 60px #ffffff;
+        }
+        .info {
+            margin: 10px;
+        }
+        .status {
+            margin-top: 20px;
+            font-size: 1.2em;
+            color: green;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Voice Controlled ESP32 Servo</h1>
+        <div class="info">Say "reset", "left", "right", "up", "down", "patrol", "north", "south", "east", or "west".</div>
+        <div class="info">Pan: <span id="panPos">90</span>°</div>
+        <div class="info">Tilt: <span id="tiltPos">120</span>°</div>
+        <div class="status" id="status">Click to start voice recognition</div>
+    </div>
+    <script>
+        const panPosElem = document.getElementById('panPos');
+        const tiltPosElem = document.getElementById('tiltPos');
+        const statusElem = document.getElementById('status');
+
+        function sendCommand(command) {
+            fetch(`http://192.168.1.23/${command}`).then(() => {
+                if (command === 'zero') {
+                    panPosElem.textContent = 90;
+                    tiltPosElem.textContent = 120;
+                }
+                if (command === 'panleft') panPosElem.textContent = Math.min(parseInt(panPosElem.textContent) + 10, 180);
+                if (command === 'panright') panPosElem.textContent = Math.max(parseInt(panPosElem.textContent) - 10, 0);
+                if (command === 'tiltup') tiltPosElem.textContent = Math.min(parseInt(tiltPosElem.textContent) + 10, 180);
+                if (command === 'tiltdown') tiltPosElem.textContent = Math.max(parseInt(tiltPosElem.textContent) - 10, 90);
+                if (command === 'west') panPosElem.textContent = 180;
+                if (command === 'east') panPosElem.textContent = 0;
+                if (command === 'north') tiltPosElem.textContent = 180;
+                if (command === 'south') tiltPosElem.textContent = 90;
+            });
+        }
+
+        window.SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        const recognition = new SpeechRecognition();
+        recognition.lang = 'en-US';
+        recognition.interimResults = false;
+        recognition.maxAlternatives = 1;
+        recognition.continuous = true;  // Ensure continuous listening
+
+        recognition.onstart = () => {
+            statusElem.textContent = 'Listening...';
+            statusElem.style.color = 'blue';
+        };
+
+        recognition.onend = () => {
+            statusElem.textContent = 'Listening stopped, restarting...';
+            statusElem.style.color = 'green';
+            recognition.start(); // Restart the recognition
+        };
+
+        recognition.onresult = (event) => {
+            const command = event.results[event.resultIndex][0].transcript.toLowerCase().trim();
+            console.log('Command:', command);
+
+            if (command.includes('reset')) sendCommand('zero');
+            else if (command.includes('left')) sendCommand('panleft');
+            else if (command.includes('right')) sendCommand('panright');
+            else if (command.includes('up')) sendCommand('tiltup');
+            else if (command.includes('down')) sendCommand('tiltdown');
+            else if (command.includes('patrol')) sendCommand('patrol');
+            else if (command.includes('west')) sendCommand('west');
+            else if (command.includes('east')) sendCommand('east');
+            else if (command.includes('north')) sendCommand('north');
+            else if (command.includes('south')) sendCommand('south');
+        };
+
+        recognition.onerror = (event) => {
+            statusElem.textContent = 'Error occurred in recognition: ' + event.error;
+            statusElem.style.color = 'red';
+            console.error('Error occurred in recognition:', event.error);
+            recognition.start(); // Restart on error
+        };
+
+        document.body.onclick = () => {
+            recognition.start();
+        };
+    </script>
+</body>
+</html>
