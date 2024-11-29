@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Ultimate Autonomous Robot Control</title>
+    <!-- Include TensorFlow.js and the COCO-SSD model -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.11.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2"></script>
+    <!-- Include the Web Speech API for voice commands -->
+    <script src="https://cdn.jsdelivr.net/npm/annyang@2.6.1/dist/annyang.min.js"></script>
+    <!-- Include Compromise.js for NLP -->
+    <script src="https://unpkg.com/compromise@13.11.3/builds/compromise.min.js"></script>
+    <style>
+        /* Basic styles for the control panel */
+        body, html {
+            margin: 0;
+            padding: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #1c1c1c;
+            color: #e0e0e0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            height: 100vh;
+            overflow: hidden;
+        }
+        h1 {
+            margin-top: 20px;
+            color: #00ff7f;
+            text-shadow: 0 0 10px rgba(0, 255, 127, 0.7);
+        }
+        .button-container {
+            display: flex;
+            gap: 20px;
+            margin: 20px;
+        }
+        button {
+            padding: 15px 30px;
+            font-size: 18px;
+            color: #fff;
+            background-color: #333;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            box-shadow: 2px 2px 6px rgba(0,0,0,0.3);
+            transition: background-color 0.3s, transform 0.3s;
+        }
+        button:hover {
+            background-color: #555;
+            transform: translateY(-2px);
+        }
+        button.stop {
+            background-color: #ff4500;
+        }
+        video {
+            width: 640px;
+            height: 480px;
+            border: 2px solid #00ff7f;
+            border-radius: 10px;
+            margin-top: 20px;
+            background-color: #000;
+        }
+        #log {
+            margin-top: 20px;
+            max-height: 300px;
+            overflow-y: auto;
+            width: 80%;
+            border: 1px solid #555;
+            background-color: #121212;
+            padding: 10px;
+            border-radius: 8px;
+            font-family: monospace;
+            color: #00ff7f;
+        }
+        #log p {
+            margin: 0;
+        }
+        /* Responsive adjustments */
+        @media screen and (max-width: 768px) {
+            video {
+                width: 100%;
+                height: auto;
+            }
+        }
+    </style>
+</head>
+<body>
+
+<h1>Ultimate Autonomous Robot Control</h1>
+<div class="button-container">
+    <button id="startButton">Start</button>
+    <button id="stopButton" class="stop">Stop</button>
+    <button id="voiceButton">Enable Voice Commands</button>
+</div>
+<video id="webcam" autoplay playsinline></video>
+<div id="log"></div>
+
+<script>
+    // Base URLs for the robot's units
+    const robotURL = 'https://bb2mobileunit.local';  // Base URL of the robot's server (HTTPS)
+    const armURL = 'https://192.168.1.188';          // URL for the arm control unit (HTTPS)
+    const headURL = 'https://192.168.1.78';          // URL for the head control unit (HTTPS)
+
+    // State Variables
+    let running = false;
+    let objectModel;
+    let currentTarget = null;
+    let lastTargetSwitch = 0;
+    let targetSwitchInterval = 5000; // Switch target every 5 seconds
+    let lastRestTime = 0;
+    let restInterval = 20000; // Rest every 20 seconds
+    let lastEmotionTime = 0;
+    let emotionInterval = 30000; // Express emotion every 30 seconds
+    let followMeMode = false;
+    let targetPerson = null; // The person to follow
+
+    const logElement = document.getElementById('log');
+
+    // Log Function
+    function log(message) {
+        const p = document.createElement('p');
+        p.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+        logElement.appendChild(p);
+        logElement.scrollTop = logElement.scrollHeight;
+        console.log(message); // Also log to the console for debugging
+    }
+
+    // Start Autonomy
+    async function startAutonomy() {
+        if (running) return;
+        running = true;
+        log('Autonomy started.');
+        lastRestTime = Date.now();
+        lastEmotionTime = Date.now();
+
+        // Start Webcam and Object Detection Model
+        await startWebcamAndModel();
+
+        // Start the main loop
+        mainLoop();
+    }
+
+    // Stop Autonomy
+    function stopAutonomy() {
+        running = false;
+        followMeMode = false;
+        targetPerson = null;
+        log('Autonomy stopped.');
+        stopAllActions();
+    }
+
+    // Main Loop
+    async function mainLoop() {
+        while (running) {
+            const now = Date.now();
+
+            // Collision Detection
+            await collisionDetection();
+
+            // Check if it's time to rest
+            if (now - lastRestTime > restInterval) {
+                await restAndHangOut();
+                lastRestTime = now;
+            }
+
+            // Check if it's time to express emotion
+            if (now - lastEmotionTime > emotionInterval) {
+                await expressEmotion();
+                lastEmotionTime = now;
+            }
+
+            if (followMeMode) {
+                // Follow the target person
+                await followPerson();
+            } else {
+                // Explore and interact with the environment
+                await exploreAndInteract();
+            }
+
+            // Small delay to prevent tight looping
+            await delay(100);
+        }
+    }
+
+    // Start Webcam and Load Object Detection Model
+    async function startWebcamAndModel() {
+        // Load Object Detection Model if not already loaded
+        if (!objectModel) {
+            objectModel = await cocoSsd.load();
+            log('Object detection model loaded.');
+        }
+
+        // Start Webcam if not already started
+        const video = document.getElementById('webcam');
+        if (!video.srcObject) {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+                video.srcObject = stream;
+                log('Webcam started.');
+            } catch (error) {
+                log(`Error accessing webcam: ${error.message}`);
+            }
+        }
+    }
+
+    // Explore and Interact with the Environment
+    async function exploreAndInteract() {
+        if (!running) return;
+
+        log('Exploring the environment...');
+
+        // Randomly choose an action
+        const actionChoice = Math.random();
+
+        if (actionChoice < 0.5) {
+            // Move Forward
+            await moveForward();
+        } else {
+            // Random Precise Turn
+            const angle = (Math.random() - 0.5) * 90; // Random angle between -45 and 45 degrees
+            log(`Randomly turning ${angle.toFixed(2)} degrees.`);
+            await sendCommand(`/turn?angle=${angle.toFixed(2)}`);
+        }
+
+        // Check for Objects of Interest
+        const predictions = await detectObjects();
+
+        if (predictions.length > 0) {
+            const now = Date.now();
+
+            // Switch target periodically
+            if (!currentTarget || now - lastTargetSwitch > targetSwitchInterval) {
+                currentTarget = selectMostInterestingObject(predictions);
+                lastTargetSwitch = now;
+                log(`New target acquired: ${currentTarget.class}`);
+            }
+
+            // Track the current target
+            await trackObject(currentTarget);
+        } else {
+            currentTarget = null;
+            log('No objects detected.');
+            // Move head to default position
+            await centerHead();
+        }
+    }
+
+    // Collision Detection
+    async function collisionDetection() {
+        // Fetch sensor data from the robot
+        try {
+            const response = await fetch(`${robotURL}/get_sensor_data`);
+            if (!response.ok) throw new Error('Failed to fetch sensor data');
+            const sensorData = await response.json();
+            const { frontDistance, leftDistance, rightDistance } = sensorData;
+
+            // Check for obstacles
+            if (frontDistance < 30) {
+                log('Obstacle detected ahead! Stopping and turning.');
+                await sendCommand('/stop');
+                await sendCommand('/backward', 500);
+                await sendCommand('/left', 1000);
+            } else if (leftDistance < 20) {
+                log('Obstacle detected on the left! Turning right.');
+                await sendCommand('/right', 500);
+            } else if (rightDistance < 20) {
+                log('Obstacle detected on the right! Turning left.');
+                await sendCommand('/left', 500);
+            }
+        } catch (error) {
+            log(`Error fetching sensor data: ${error.message}`);
+        }
+    }
+
+    // Move Forward with Obstacle Avoidance
+    async function moveForward() {
+        log('Attempting to move forward...');
+        await sendCommand('/smartnav/on');
+        await sendCommand('/forward', 3000);
+        await sendCommand('/smartnav/off');
+    }
+
+    // Detect Objects Using Webcam
+    async function detectObjects() {
+        if (!objectModel) return [];
+
+        const video = document.getElementById('webcam');
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d');
+
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        return await objectModel.detect(canvas);
+    }
+
+    // Select the Most Interesting Object
+    function selectMostInterestingObject(predictions) {
+        // Prioritize certain objects (e.g., person, cat, dog)
+        const priorityClasses = ['person', 'cat', 'dog'];
+        const sortedPredictions = predictions.sort((a, b) => {
+            const aPriority = priorityClasses.includes(a.class) ? 1 : 0;
+            const bPriority = priorityClasses.includes(b.class) ? 1 : 0;
+            return bPriority - aPriority || b.score - a.score;
+        });
+        return sortedPredictions[0];
+    }
+
+    // Track Object
+    async function trackObject(object) {
+        if (!running || !object) return;
+
+        log(`Tracking object: ${object.class}`);
+
+        // Calculate head movement to center the object
+        await moveHeadToCenterObject(object);
+
+        // Align robot with the object using precise turn
+        await alignWithObject(object);
+
+        // Express emotion based on object class
+        if (['person', 'cat', 'dog'].includes(object.class)) {
+            await expressHappiness();
+        } else {
+            await expressCuriosity();
+        }
+
+        // Engage in interaction
+        await interactWithObject(object.class);
+
+        // Short delay to simulate processing time
+        await delay(500);
+    }
+
+    // Align Robot with Object Using Precise Turn
+    async function alignWithObject(object) {
+        const video = document.getElementById('webcam');
+        const videoWidth = video.videoWidth;
+        const xCenter = object.bbox[0] + object.bbox[2] / 2;
+
+        // Calculate normalized x position (-1 to 1)
+        const xNormalized = (xCenter - videoWidth / 2) / (videoWidth / 2);
+
+        // Calculate angle to turn (e.g., -45 to 45 degrees)
+        const angle = xNormalized * 45; // Adjust sensitivity as needed
+
+        if (Math.abs(angle) > 5) { // Only turn if angle is significant
+            log(`Aligning with object: Turning ${angle.toFixed(2)} degrees.`);
+            await sendCommand(`/turn?angle=${angle.toFixed(2)}`);
+        } else {
+            log('Object is centered.');
+        }
+    }
+
+    // Move Head to Center Object
+    async function moveHeadToCenterObject(object) {
+        const video = document.getElementById('webcam');
+        const videoWidth = video.videoWidth;
+        const videoHeight = video.videoHeight;
+
+        // Calculate center of the bounding box
+        const xCenter = object.bbox[0] + object.bbox[2] / 2;
+        const yCenter = object.bbox[1] + object.bbox[3] / 2;
+
+        // Normalize coordinates to [-1, 1]
+        const xNormalized = (xCenter - videoWidth / 2) / (videoWidth / 2);
+        const yNormalized = (yCenter - videoHeight / 2) / (videoHeight / 2);
+
+        // Calculate the desired pan and tilt adjustments
+        const panAdjustment = xNormalized * 30;   // Adjust sensitivity as needed
+        const tiltAdjustment = yNormalized * 20;
+
+        // Get current head pan and tilt values (assuming defaults)
+        let currentPan = 117; // Default center pan
+        let currentTilt = 90; // Default center tilt
+
+        // Calculate new pan and tilt values
+        const newPan = currentPan + panAdjustment;
+        const newTilt = currentTilt - tiltAdjustment;
+
+        // Clamp values to servo limits
+        const clampedPan = Math.max(0, Math.min(270, newPan));
+        const clampedTilt = Math.max(75, Math.min(110, newTilt));
+
+        // Send commands to move head
+        await sendHeadCommand(`/set_pan?value=${clampedPan.toFixed(0)}`);
+        await sendHeadCommand(`/set_tilt?value=${clampedTilt.toFixed(0)}`);
+
+        log(`Head moved to Pan: ${clampedPan.toFixed(0)}°, Tilt: ${clampedTilt.toFixed(0)}°`);
+    }
+
+    // Center Head Position
+    async function centerHead() {
+        await sendHeadCommand('/set_pan?value=117');
+        await sendHeadCommand('/set_tilt?value=90');
+        await sendHeadCommand('/set_right_ear?value=90');
+        await sendHeadCommand('/set_left_ear?value=90');
+        log('Head centered.');
+    }
+
+    // Rest and Hang Out
+    async function restAndHangOut() {
+        if (!running) return;
+
+        log('Taking a moment to rest and hang out...');
+        // Stop moving
+        await sendCommand('/stop');
+        // Move to a relaxed pose
+        await sendArmCommand('/pose2'); // Assume pose2 is a relaxed pose
+        // Express a random emotion
+        await expressEmotion();
+        // Pause for a random duration between 5 to 10 seconds
+        const restDuration = 5000 + Math.random() * 5000;
+        await delay(restDuration);
+    }
+
+    // Express Emotion
+    async function expressEmotion() {
+        if (!running) return;
+
+        log('Expressing emotion...');
+        // Randomly choose an emotion to express
+        const emotions = ['happy', 'curious', 'surprised'];
+        const emotion = emotions[Math.floor(Math.random() * emotions.length)];
+
+        if (emotion === 'happy') {
+            await expressHappiness();
+        } else if (emotion === 'curious') {
+            await expressCuriosity();
+        } else if (emotion === 'surprised') {
+            await expressSurprise();
+        }
+    }
+
+    // Express Happiness
+    async function expressHappiness() {
+        log('Expressing happiness...');
+        // Move ears or perform a happy gesture
+        await sendHeadCommand('/set_right_ear?value=60');
+        await sendHeadCommand('/set_left_ear?value=120');
+        await sendArmCommand('/pose1'); // Assume pose1 is a happy pose
+        await delay(1000);
+        await sendHeadCommand('/set_right_ear?value=90');
+        await sendHeadCommand('/set_left_ear?value=90');
+        await sendArmCommand('/basepose');
+    }
+
+    // Express Curiosity
+    async function expressCuriosity() {
+        log('Expressing curiosity...');
+        // Tilt head slightly and adjust ears
+        await sendHeadCommand('/set_tilt?value=100');
+        await sendHeadCommand('/set_right_ear?value=80');
+        await sendHeadCommand('/set_left_ear?value=100');
+        await delay(1000);
+        await sendHeadCommand('/set_tilt?value=90');
+        await sendHeadCommand('/set_right_ear?value=90');
+        await sendHeadCommand('/set_left_ear?value=90');
+    }
+
+    // Express Surprise
+    async function expressSurprise() {
+        log('Expressing surprise...');
+        // Open arms or move head quickly
+        await sendHeadCommand('/set_tilt?value=80');
+        await sendHeadCommand('/set_pan?value=130');
+        await sendArmCommand('/pose5'); // Assume pose5 is a surprised pose
+        await delay(1000);
+        await sendHeadCommand('/set_tilt?value=90');
+        await sendHeadCommand('/set_pan?value=117');
+        await sendArmCommand('/basepose');
+    }
+
+    // Interact with Object
+    async function interactWithObject(objectClass) {
+        if (!running) return;
+
+        log(`Interacting with ${objectClass}...`);
+
+        if (objectClass === 'person') {
+            // Wave at the person
+            await sendArmCommand('/pose3'); // Assume pose3 is a waving pose
+            await delay(2000);
+            await sendArmCommand('/basepose');
+        } else if (objectClass === 'cat' || objectClass === 'dog') {
+            // Playful gesture
+            await sendArmCommand('/pose4'); // Assume pose4 is a playful pose
+            await delay(2000);
+            await sendArmCommand('/basepose');
+        } else {
+            // General curiosity
+            await expressCuriosity();
+        }
+    }
+
+    // Follow Me Feature
+    async function followPerson() {
+        if (!running || !followMeMode) return;
+
+        // Detect objects
+        const predictions = await detectObjects();
+        const personDetections = predictions.filter(p => p.class === 'person');
+
+        if (personDetections.length > 0) {
+            const person = personDetections[0]; // Assuming the first person is the target
+
+            // Assign as the target person if not already
+            if (!targetPerson) {
+                targetPerson = person;
+                log(`Follow Me: Target person acquired.`);
+            }
+
+            // Move head to track the person
+            await moveHeadToCenterObject(person);
+
+            // Calculate movement based on person's position
+            const video = document.getElementById('webcam');
+            const videoWidth = video.videoWidth;
+
+            const xCenter = person.bbox[0] + person.bbox[2] / 2;
+            const xNormalized = (xCenter - videoWidth / 2) / (videoWidth / 2);
+
+            if (Math.abs(xNormalized) > 0.1) {
+                // Person is off-center, turn towards them using precise turn
+                const angle = xNormalized * 30; // Adjust sensitivity
+                log(`Turning ${angle.toFixed(2)} degrees to align with person.`);
+                await sendCommand(`/turn?angle=${angle.toFixed(2)}`);
+            } else {
+                // Person is centered, move forward
+                await sendCommand('/forward', 500);
+            }
+        } else {
+            log('Follow Me: Lost sight of the person.');
+            targetPerson = null;
+            // Rotate to search for the person
+            await sendCommand('/left', 500);
+        }
+    }
+
+    // Stop All Actions
+    async function stopAllActions() {
+        await sendCommand('/stop');
+        await centerHead();
+        await sendArmCommand('/basepose');
+        log('All actions stopped.');
+    }
+
+    // Utility Function: Send Command to Mobile Unit
+    async function sendCommand(command, duration = 0) {
+        log(`Sending command: ${command}`);
+        try {
+            const response = await fetch(`${robotURL}${command}`);
+            if (!response.ok) throw new Error(`Failed to send command: ${command}`);
+
+            // Do not send /stop after duration if command is /turn
+            if (duration > 0 && !command.startsWith('/turn')) {
+                await delay(duration);
+                await fetch(`${robotURL}/stop`);
+            }
+        } catch (error) {
+            log(`Error sending command ${command}: ${error.message}`);
+        }
+    }
+
+    // Utility Function: Send Command to Arm Unit
+    async function sendArmCommand(command) {
+        log(`Sending arm command: ${command}`);
+        try {
+            const response = await fetch(`${armURL}${command}`);
+            if (!response.ok) throw new Error(`Failed to send arm command: ${command}`);
+        } catch (error) {
+            log(`Error sending arm command ${command}: ${error.message}`);
+        }
+    }
+
+    // Utility Function: Send Command to Head Unit
+    async function sendHeadCommand(command) {
+        log(`Sending head command: ${command}`);
+        try {
+            const response = await fetch(`${headURL}${command}`);
+            if (!response.ok) throw new Error(`Failed to send head command: ${command}`);
+        } catch (error) {
+            log(`Error sending head command ${command}: ${error.message}`);
+        }
+    }
+
+    // Utility Function: Delay
+    function delay(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    // Voice Command Integration with NLP
+    let voiceCommandsEnabled = false;
+
+    document.getElementById('voiceButton').addEventListener('click', () => {
+        if (!voiceCommandsEnabled) {
+            enableVoiceCommands();
+            document.getElementById('voiceButton').innerText = 'Disable Voice Commands';
+        } else {
+            disableVoiceCommands();
+            document.getElementById('voiceButton').innerText = 'Enable Voice Commands';
+        }
+    });
+
+    function enableVoiceCommands() {
+        if (annyang && !voiceCommandsEnabled) {
+            // Define voice commands
+            const commands = {
+                '*command': async (command) => {
+                    log(`Voice Command Received: "${command}"`);
+                    await processVoiceCommand(command);
+                }
+            };
+
+            // Add commands to annyang
+            annyang.addCommands(commands);
+
+            // Start listening
+            annyang.start({ continuous: true });
+            voiceCommandsEnabled = true;
+            log('Voice commands enabled.');
+        }
+    }
+
+    function disableVoiceCommands() {
+        if (annyang && voiceCommandsEnabled) {
+            annyang.abort();
+            voiceCommandsEnabled = false;
+            log('Voice commands disabled.');
+        }
+    }
+
+    // Process Voice Commands using NLP
+    async function processVoiceCommand(command) {
+        // Use Compromise.js to parse the command
+        const doc = nlp(command.toLowerCase());
+
+        if (doc.has('start')) {
+            await startAutonomy();
+        } else if (doc.has('stop')) {
+            await stopAutonomy();
+        } else if (doc.has('move #Direction')) {
+            const direction = doc.match('move #Direction').terms(1).out('text');
+            if (direction === 'forward') {
+                await sendCommand('/forward', 2000);
+            } else if (direction === 'backward') {
+                await sendCommand('/backward', 2000);
+            } else if (direction === 'left') {
+                await sendCommand('/left', 1000);
+            } else if (direction === 'right') {
+                await sendCommand('/right', 1000);
+            }
+        } else if (doc.has('turn #Value degrees')) {
+            const valueText = doc.match('turn #Value degrees').match('#Value').out('text');
+            const angle = parseFloat(valueText);
+            if (!isNaN(angle)) {
+                await sendCommand(`/turn?angle=${angle}`);
+                log(`Turning ${angle} degrees.`);
+            } else {
+                log('Invalid angle specified for turn command.');
+            }
+        } else if (doc.has('follow me')) {
+            followMeMode = true;
+            log('Follow Me mode activated.');
+        } else if (doc.has('stop following')) {
+            followMeMode = false;
+            targetPerson = null;
+            log('Follow Me mode deactivated.');
+        } else if (doc.has('express emotion')) {
+            await expressEmotion();
+        } else if (doc.has('wave')) {
+            await sendArmCommand('/pose3'); // Assume pose3 is a waving pose
+            await delay(2000);
+            await sendArmCommand('/basepose');
+        } else if (doc.has('dance')) {
+            await performDanceRoutine();
+        } else {
+            log('Unrecognized command.');
+        }
+    }
+
+    // Dance Routine
+    async function performDanceRoutine() {
+        if (!running) return;
+
+        log('Starting dance routine...');
+
+        // Sequence of movements
+        const danceMoves = [
+            { action: '/forward', duration: 1000 },
+            { action: '/left', duration: 500 },
+            { action: '/right', duration: 500 },
+            { action: '/backward', duration: 1000 },
+            { action: '/stop', duration: 0 },
+            { action: 'pose', command: '/pose1', duration: 2000 },
+            { action: 'pose', command: '/pose5', duration: 2000 },
+            { action: 'pose', command: '/basepose', duration: 0 },
+        ];
+
+        for (const move of danceMoves) {
+            if (move.action === 'pose') {
+                await sendArmCommand(move.command);
+                await delay(move.duration);
+            } else {
+                await sendCommand(move.action, move.duration);
+            }
+        }
+
+        log('Dance routine complete.');
+    }
+
+    // Event Listeners for Start and Stop Buttons
+    document.getElementById('startButton').addEventListener('click', () => {
+        if (!running) startAutonomy();
+    });
+
+    document.getElementById('stopButton').addEventListener('click', stopAutonomy);
+
+    // Disable Start Button While Running
+    setInterval(() => {
+        document.getElementById('startButton').disabled = running;
+        document.getElementById('stopButton').disabled = !running;
+    }, 100);
+</script>
+
+</body>
+</html>

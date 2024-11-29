@@ -1,0 +1,1159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Robot Control Panel with Object Tracking</title>
+    <!-- Include TensorFlow.js and the COCO-SSD model -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.11.0/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.2"></script>
+    <style>
+        /* Styles for the control panel */
+        body, html {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            background-color: #1c1c1c;
+            color: #e0e0e0;
+            height: 100vh;
+            overflow: hidden;
+        }
+        .container {
+            display: grid;
+            grid-template-areas: 
+                "head head head"
+                "left video right"
+                "controls controls controls"
+                "log log log";
+            grid-template-columns: 1fr 2fr 1fr;
+            grid-template-rows: auto auto auto 1fr;
+            width: 100vw;
+            height: 100vh;
+            gap: 10px;
+            padding: 10px;
+            box-sizing: border-box;
+        }
+        .section {
+            padding: 10px;
+            background-color: #2c2c2c;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            overflow-y: auto;
+        }
+        .head-controls { grid-area: head; max-height: 20vh; }
+        .left-arm-controls { grid-area: left; }
+        .video-stream { grid-area: video; background-color: #000; position: relative; }
+        .right-arm-controls { grid-area: right; }
+        .controls { grid-area: controls; }
+        .log-area { grid-area: log; max-height: 25vh; overflow-y: auto; }
+
+        button {
+            padding: 8px;
+            margin: 4px;
+            background-color: #333;
+            color: #e0e0e0;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 12px;
+            box-shadow: 2px 2px 6px rgba(0,0,0,0.3);
+        }
+        button:hover {
+            background-color: #555;
+        }
+        .slider-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 5px;
+            width: 120px;
+        }
+        .slider-label {
+            font-size: 12px;
+            margin-bottom: 3px;
+        }
+        input[type="range"] {
+            width: 100%;
+        }
+        #confidenceDisplay {
+            text-align: center;
+            color: yellow;
+            font-size: 1em;
+            font-weight: bold;
+            padding: 5px;
+        }
+        h2 {
+            margin: 5px 0;
+        }
+        .controls-grid {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            align-items: center;
+        }
+        /* Mapping canvas styles */
+        #mappingCanvas {
+            width: 100%;
+            max-width: 200px;
+            height: auto;
+            background-color: #1c1c1c;
+            border: 1px solid #555;
+            border-radius: 10px;
+            position: absolute;
+            bottom: 10px;
+            right: 10px;
+            opacity: 0.8;
+        }
+        /* Video stream adjustments */
+        #webcam {
+            width: 100%;
+            height: auto;
+            border-radius: 10px;
+        }
+        /* Responsive adjustments */
+        @media screen and (max-width: 768px) {
+            .container {
+                grid-template-areas:
+                    "head"
+                    "video"
+                    "controls"
+                    "left"
+                    "right"
+                    "log";
+                grid-template-columns: 1fr;
+                grid-template-rows: auto auto auto auto auto 1fr;
+            }
+            .left-arm-controls, .right-arm-controls {
+                max-height: 30vh;
+            }
+            .video-stream {
+                max-height: 40vh;
+            }
+            .log-area .logs-container {
+                flex-direction: column;
+            }
+        }
+        /* Updated styles for log area */
+        .log-area {
+            grid-area: log;
+            max-height: 25vh;
+            overflow-y: auto;
+        }
+#heading-display {
+    margin-top: 10px;
+}
+
+#headingCanvas {
+    background-color: #1c1c1c;
+    border: 1px solid #555;
+    border-radius: 50%;
+}
+
+        .log-area .logs-container {
+            display: flex;
+            flex-direction: row;
+            width: 100%;
+            height: 100%;
+        }
+        .log-area .logs-container > div {
+            flex: 1;
+            margin: 5px;
+            display: flex;
+            flex-direction: column;
+            background-color: rgba(0, 0, 0, 0.6);
+            padding: 5px;
+            border-radius: 8px;
+            overflow-y: auto;
+        }
+        .log-area .logs-container > div p {
+            margin: 0;
+            font-family: monospace;
+            color: yellow;
+        }
+        #uniqueLog, #log {
+            flex: 1;
+            overflow-y: auto;
+            font-family: monospace;
+            color: yellow;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <!-- Head Controls Section -->
+    <div class="section head-controls">
+        <h2>Head Controls</h2>
+        <div class="controls-grid">
+            <button onclick="centerHead()">Center Head</button>
+            <button onclick="sendHeadCommand('/nod_yes')">Nod Yes</button>
+            <button onclick="sendHeadCommand('/shake_no')">Shake No</button>
+            <button onclick="centerEars()">Center Ears</button>
+            <button onclick="centerCamera()">Center Camera</button>
+            <!-- TRACK Button -->
+            <button id="trackButton" onclick="toggleTracking()">Activate TRACK</button>
+            <!-- Sliders placed just below the buttons and arranged side by side -->
+            <div class="slider-container">
+                <div class="slider-label">Pan Angle</div>
+                <input type="range" min="0" max="270" value="117" id="headPanSlider" oninput="updateHeadPan(this.value)">
+            </div>
+            <div class="slider-container">
+                <div class="slider-label">Tilt Angle</div>
+                <input type="range" min="75" max="110" value="90" id="headTiltSlider" oninput="updateHeadTilt(this.value)">
+            </div>
+            <!-- Ear Control Sliders -->
+            <div class="slider-container">
+                <label><input type="checkbox" id="syncEarsCheckbox" onchange="toggleSyncEars()"> Sync Ears</label>
+            </div>
+            <div class="slider-container">
+                <div class="slider-label">Right Ear Angle</div>
+                <input type="range" min="0" max="180" value="90" id="rightEarSlider" oninput="updateRightEar(this.value)">
+            </div>
+            <div class="slider-container">
+                <div class="slider-label">Left Ear Angle</div>
+                <input type="range" min="0" max="180" value="90" id="leftEarSlider" oninput="updateLeftEar(this.value)">
+            </div>
+            <!-- Camera Control Sliders -->
+            <div class="slider-container">
+                <div class="slider-label">Camera Pan</div>
+                <input type="range" min="0" max="180" value="97" id="cameraPanSlider" oninput="updateCameraPan(this.value)">
+            </div>
+            <div class="slider-container">
+                <div class="slider-label">Camera Tilt</div>
+                <input type="range" min="0" max="180" value="80" id="cameraTiltSlider" oninput="updateCameraTilt(this.value)">
+            </div>
+        </div>
+    </div>
+
+    <!-- Left Arm Controls -->
+    <div class="section left-arm-controls">
+        <h2>Left Arm Controls</h2>
+        <div class="controls-grid">
+            <button onclick="sendArmCommand('/pose1')">RAWR</button>
+            <button onclick="sendArmCommand('/pose3')">Carry</button>
+            <button onclick="sendArmCommand('/pose5')">Gimme Money</button>
+            <button onclick="sendArmCommand('/pose4')">Spirit Ball</button>
+            <button onclick="sendArmCommand('/pose2')">Side Pose</button>
+        </div>
+        <!-- Left Arm Sliders -->
+        <div class="slider-container">
+            <div class="slider-label">Left Shoulder A</div>
+            <input type="range" min="0" max="180" value="90" id="leftShoulderASlider" oninput="updateLeftShoulderA(this.value)">
+        </div>
+        <div class="slider-container">
+            <div class="slider-label">Left Shoulder B</div>
+            <input type="range" min="0" max="180" value="90" id="leftShoulderBSlider" oninput="updateLeftShoulderB(this.value)">
+        </div>
+        <div class="slider-container">
+            <div class="slider-label">Left Wrist A</div>
+            <input type="range" min="0" max="180" value="90" id="leftWristASlider" oninput="updateLeftWristA(this.value)">
+        </div>
+        <div class="slider-container">
+            <div class="slider-label">Left Wrist B</div>
+            <input type="range" min="0" max="180" value="90" id="leftWristBSlider" oninput="updateLeftWristB(this.value)">
+        </div>
+        <div class="slider-container">
+            <div class="slider-label">Left Claw</div>
+            <input type="range" min="-10" max="70" value="70" id="leftClawSlider" oninput="updateLeftClaw(this.value)">
+        </div>
+<div id="heading-display">
+    <canvas id="headingCanvas" width="100" height="100"></canvas>
+</div>
+    </div>
+
+    <!-- Video Stream and Mapping Canvas -->
+    <div class="section video-stream">
+        <video id="webcam" autoplay playsinline width="640" height="480"></video>
+        <canvas id="canvas" width="640" height="480" style="display:none;"></canvas>
+        <!-- Mapping Canvas Overlay -->
+        <canvas id="mappingCanvas" width="200" height="200"></canvas>
+        <div id="confidenceDisplay"></div>
+    </div>
+
+    <!-- Right Arm Controls -->
+    <div class="section right-arm-controls">
+        <h2>Right Arm Controls</h2>
+        <div class="controls-grid">
+            <button onclick="sendArmCommand('/stopDemo')">ARM STOP</button>
+            <button onclick="startWaveRoutine()">Wave</button>
+            <button onclick="sendArmCommand('/calibrate90')">Cal 90</button>
+            <button onclick="sendArmCommand('/basepose')">BASE</button>
+            <button onclick="sendArmCommand('/demo1')">DEMO 1</button>
+            <button onclick="sendArmCommand('/demo2')">DEMO 2</button>
+        </div>
+        <!-- Right Arm Sliders -->
+        <div class="slider-container">
+            <div class="slider-label">Right Shoulder A</div>
+            <input type="range" min="0" max="180" value="90" id="rightShoulderASlider" oninput="updateRightShoulderA(this.value)">
+        </div>
+        <div class="slider-container">
+            <div class="slider-label">Right Shoulder B</div>
+            <input type="range" min="0" max="180" value="90" id="rightShoulderBSlider" oninput="updateRightShoulderB(this.value)">
+        </div>
+        <div class="slider-container">
+            <div class="slider-label">Right Wrist A</div>
+            <input type="range" min="0" max="180" value="90" id="rightWristASlider" oninput="updateRightWristA(this.value)">
+        </div>
+        <div class="slider-container">
+            <div class="slider-label">Right Wrist B</div>
+            <input type="range" min="0" max="180" value="90" id="rightWristBSlider" oninput="updateRightWristB(this.value)">
+        </div>
+        <div class="slider-container">
+            <div class="slider-label">Right Claw</div>
+            <input type="range" min="70" max="170" value="170" id="rightClawSlider" oninput="updateRightClaw(this.value)">
+        </div>
+    </div>
+
+    <!-- Movement Controls -->
+    <div class="section controls">
+        <h2>Movement Controls</h2>
+        <div class="controls-grid">
+            <!-- SMART NAV Activation Button -->
+            <button id="smartNavButton" onclick="toggleSmartNav()">Activate SMART NAV</button>
+            <!-- New Follow Me Activation Button -->
+            <button id="followMeButton" onclick="activateFollowMe()">Activate FOLLOW ME</button>
+            <!-- Manual Movement Controls -->
+            <button data-command="/forward">UP</button>
+            <button id="leftButton" data-command="/left">LEFT</button>
+            <button data-command="/stop">STOP</button>
+            <button id="rightButton" data-command="/right">RIGHT</button>
+            <button data-command="/backward">DOWN</button>
+            <!-- Action Buttons -->
+            <button onclick="sendCommand('/auto')">AUTO</button>
+            <button onclick="sendCommand('/explore')">EXPLORE</button>
+            <button onclick="startDanceRoutineC()">DANCE</button>
+            <button onclick="startDanceRoutine2()">DANCE 2</button>
+            <button onclick="sendCommand('/expressEmotion')">EMOTION</button>
+            <button onclick="startTaskA()">TASK A</button>
+            <button onclick="startTaskB()">TASK B</button>
+            <button onclick="startTaskC()">TASK C</button>
+
+            <!-- Speed Controls -->
+            <button onclick="setSpeed('low')">Speed LOW</button>
+            <button onclick="setSpeed('normal')">Speed NORMAL</button>
+            <button onclick="setSpeed('high')">Speed HIGH</button>
+        </div>
+    </div>
+
+    <!-- Log Area -->
+    <div class="section log-area">
+        <h2>Activity Logs</h2>
+        <!-- Logs arranged side by side -->
+        <div class="logs-container">
+            <div id="sensor-status">
+                <p>Sensor data loading...</p>
+            </div>
+            <div id="status">
+                <p>Command log initialized...</p>
+            </div>
+            <div id="analysis-logs">
+                <div id="uniqueLog">Unique Log:</div>
+                <div id="log">Analysis Log:</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Include your JavaScript functions -->
+<script>
+    // URLs for the robot's units
+    const robotURL = 'http://bb2mobileunit.local';  // Base URL of the robot's server
+    const armURL = 'http://192.168.1.188';          // URL for the arm control unit bb2arms
+    const headURL = 'http://192.168.1.78';         // URL for the head control unit
+    let currentCommand = null;                      // To track the current movement command
+    let smartNavEnabled = false;                    // For SMART NAV functionality
+    let ws;                                         // WebSocket instance
+
+    // Variables for mapping
+    const mappingCanvas = document.getElementById('mappingCanvas');
+    const ctx = mappingCanvas.getContext('2d');
+    const mapSize = 300; // Canvas size in pixels
+    const robotPosition = { x: mapSize / 2, y: mapSize / 2 };
+    const scale = 2; // Scale factor for distance mapping to fit room size
+    let pathHistory = []; // To store robot's path
+
+    // Initialize WebSocket for sensor data
+    function initWebSocket() {
+        ws = new WebSocket('ws://bb2mobileunit.local/ws');  // Use appropriate port for WebSocket
+
+        ws.onopen = () => {
+            console.log('WebSocket connected');
+            ws.send(JSON.stringify({command: 'sensorSubscribe'}));  // Subscribe to sensor data updates
+        };
+
+        ws.onmessage = (event) => {
+            const data = JSON.parse(event.data);
+            if (data.sensorData) {
+                updateSensorStatus(data.sensorData);  // Update sensor display
+                updateMap(data.sensorData);           // Update mapping visuals
+            }
+        };
+
+        ws.onclose = () => {
+            console.log('WebSocket disconnected');
+            setTimeout(initWebSocket, 1000);  // Attempt reconnection
+        };
+    }
+    initWebSocket();  // Start WebSocket connection
+
+    // Toggle SMART NAV mode
+    function toggleSmartNav() {
+        smartNavEnabled = !smartNavEnabled;
+        document.getElementById('smartNavButton').innerText = smartNavEnabled ? 'Deactivate SMART NAV' : 'Activate SMART NAV';
+        logCommand(`SMART NAV ${smartNavEnabled ? 'activated' : 'deactivated'}`);
+        fetch(`${robotURL}/smartnav/${smartNavEnabled ? 'on' : 'off'}`)
+            .then(response => {
+                if (!response.ok) throw new Error(`Failed to toggle SMART NAV`);
+                // Disable manual controls if SMART NAV is active
+                toggleManualControls(!smartNavEnabled);
+            })
+            .catch(error => logCommand(error.message));
+    }
+
+    // New function to activate Follow Me mode
+    function activateFollowMe() {
+        fetch(`${robotURL}/follow_me`)
+            .then(response => {
+                if (!response.ok) throw new Error('Failed to activate Follow Me mode');
+                logCommand('Follow Me mode activated');
+            })
+            .catch(error => logCommand(error.message));
+    }
+
+    function toggleManualControls(enable) {
+        document.querySelectorAll('.controls button[data-command]').forEach(button => {
+            button.disabled = !enable;
+        });
+    }
+
+    // Update sensor data display
+function updateSensorStatus(sensorData) {
+    const sensorStatusDiv = document.getElementById('sensor-status');
+    sensorStatusDiv.innerHTML = `
+        <p>Front Distance: ${sensorData.front} cm</p>
+        <p>Rear Distance: ${sensorData.rear} cm</p>
+        <p>Left Distance: ${sensorData.left} cm</p>
+        <p>Right Distance: ${sensorData.right} cm</p>
+        <p>Yaw Angle: ${sensorData.yaw.toFixed(2)}°</p>
+    `;
+    // Update heading display
+    drawHeading(sensorData.yaw);
+}
+function drawHeading(yaw) {
+    const canvas = document.getElementById('headingCanvas');
+    const ctx = canvas.getContext('2d');
+    const centerX = canvas.width / 2;
+    const centerY = canvas.height / 2;
+    const radius = centerX - 5;
+
+    // Clear canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // Draw compass circle
+    ctx.beginPath();
+    ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+    ctx.strokeStyle = '#ffffff';
+    ctx.stroke();
+
+    // Draw North label
+    ctx.font = '12px Arial';
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'center';
+    ctx.fillText('N', centerX, centerY - radius + 15);
+
+    // Calculate arrow angle in radians
+    const angle = (yaw - 90) * (Math.PI / 180);
+
+    // Draw heading arrow
+    ctx.beginPath();
+    ctx.moveTo(centerX, centerY);
+    ctx.lineTo(centerX + radius * Math.cos(angle), centerY + radius * Math.sin(angle));
+    ctx.strokeStyle = '#ff0000';
+    ctx.stroke();
+}
+    // Function to send a command to the mobile unit
+    function sendCommand(command) {
+        fetch(`${robotURL}${command}`)
+            .then(response => {
+                if (!response.ok) throw new Error(`Command failed: ${command}`);
+                return response.text();
+            })
+            .then(data => logCommand(`${command} executed successfully`))
+            .catch(error => logCommand(error.message));
+    }
+
+    // Function to send a command to the arm control unit
+    function sendArmCommand(command) {
+        return fetch(`${armURL}${command}`)
+            .then(response => {
+                if (!response.ok) throw new Error(`Arm command failed: ${command}`);
+                return response.text();
+            })
+            .then(data => logCommand(`Arm ${command} executed successfully`))
+            .catch(error => logCommand(error.message));
+    }
+
+    // Function to send a command to the head control unit
+    function sendHeadCommand(command) {
+        fetch(`${headURL}${command}`)
+            .then(response => {
+                if (!response.ok) throw new Error(`Head command failed: ${command}`);
+                return response.text();
+            })
+            .then(data => logCommand(`Head ${command} executed successfully`))
+            .catch(error => logCommand(error.message));
+    }
+
+    // Function to center the head (pan and tilt)
+    function centerHead() {
+        updateHeadPan(117);
+        updateHeadTilt(90);
+    }
+
+    // Function to center the ears
+    function centerEars() {
+        updateRightEar(90);
+        updateLeftEar(90);
+    }
+
+    // Function to center the camera
+    function centerCamera() {
+        updateCameraPan(97);
+        updateCameraTilt(80);
+    }
+
+    // Variable to track ear syncing
+    let syncEarsEnabled = false;
+
+    function toggleSyncEars() {
+        syncEarsEnabled = document.getElementById('syncEarsCheckbox').checked;
+        logCommand(`Ear syncing ${syncEarsEnabled ? 'enabled' : 'disabled'}.`);
+        if (syncEarsEnabled) {
+            // Set the left ear to the same value as the right ear
+            const rightEarValue = document.getElementById('rightEarSlider').value;
+            document.getElementById('leftEarSlider').value = rightEarValue;
+            updateLeftEar(rightEarValue);
+        }
+    }
+
+    // Slider controls for precise head movements
+    function updateHeadPan(value) {
+        sendHeadCommand(`/set_pan?value=${value}`);
+        logCommand(`Head pan set to ${value}°`);
+    }
+    function updateHeadTilt(value) {
+        sendHeadCommand(`/set_tilt?value=${value}`);
+        logCommand(`Head tilt set to ${value}°`);
+    }
+    function updateRightEar(value) {
+        sendHeadCommand(`/set_right_ear?value=${value}`);
+        logCommand(`Right ear set to ${value}°`);
+        if (syncEarsEnabled) {
+            const leftEarSlider = document.getElementById('leftEarSlider');
+            leftEarSlider.value = value;
+            sendHeadCommand(`/set_left_ear?value=${value}`);
+            logCommand(`Left ear synced to ${value}°`);
+        }
+    }
+    function updateLeftEar(value) {
+        sendHeadCommand(`/set_left_ear?value=${value}`);
+        logCommand(`Left ear set to ${value}°`);
+        if (syncEarsEnabled) {
+            const rightEarSlider = document.getElementById('rightEarSlider');
+            rightEarSlider.value = value;
+            sendHeadCommand(`/set_right_ear?value=${value}`);
+            logCommand(`Right ear synced to ${value}°`);
+        }
+    }
+    function updateCameraPan(value) {
+        sendHeadCommand(`/set_camera_pan?value=${value}`);
+        logCommand(`Camera pan set to ${value}°`);
+    }
+    function updateCameraTilt(value) {
+        sendHeadCommand(`/set_camera_tilt?value=${value}`);
+        logCommand(`Camera tilt set to ${value}°`);
+    }
+
+    // Slider controls for precise arm movements
+    function updateLeftShoulderA(value) {
+        sendArmCommand(`/moveServo?channel=0&angle=${value}`);
+        logCommand(`Left Shoulder A set to ${value}°`);
+    }
+    function updateLeftShoulderB(value) {
+        sendArmCommand(`/moveServo?channel=1&angle=${value}`);
+        logCommand(`Left Shoulder B set to ${value}°`);
+    }
+    function updateLeftWristA(value) {
+        sendArmCommand(`/moveServo?channel=2&angle=${value}`);
+        logCommand(`Left Wrist A set to ${value}°`);
+    }
+    function updateLeftWristB(value) {
+        sendArmCommand(`/moveServo?channel=3&angle=${value}`);
+        logCommand(`Left Wrist B set to ${value}°`);
+    }
+    function updateLeftClaw(value) {
+        sendArmCommand(`/moveServo?channel=4&angle=${value}`);
+        logCommand(`Left Claw set to ${value}°`);
+    }
+    function updateRightShoulderA(value) {
+        sendArmCommand(`/moveServo?channel=8&angle=${value}`);
+        logCommand(`Right Shoulder A set to ${value}°`);
+    }
+    function updateRightShoulderB(value) {
+        sendArmCommand(`/moveServo?channel=9&angle=${value}`);
+        logCommand(`Right Shoulder B set to ${value}°`);
+    }
+    function updateRightWristA(value) {
+        sendArmCommand(`/moveServo?channel=10&angle=${value}`);
+        logCommand(`Right Wrist A set to ${value}°`);
+    }
+    function updateRightWristB(value) {
+        sendArmCommand(`/moveServo?channel=11&angle=${value}`);
+        logCommand(`Right Wrist B set to ${value}°`);
+    }
+    function updateRightClaw(value) {
+        sendArmCommand(`/moveServo?channel=12&angle=${value}`);
+        logCommand(`Right Claw set to ${value}°`);
+    }
+
+    // Speed adjustment functions
+    function setSpeed(level) {
+        sendCommand(`/speed/${level}`);
+        logCommand(`Speed set to ${level.toUpperCase()}`);
+    }
+
+    // Event listeners for manual control buttons
+    document.querySelectorAll('.controls button[data-command]').forEach(button => {
+        const command = button.getAttribute('data-command');
+        button.addEventListener('mousedown', function() {
+            startCommand(command);
+            if (command === "/left" || command === "/right") {
+                updateHeadPanForDirection(command === "/left" ? "left" : "right");
+            }
+        });
+        button.addEventListener('mouseup', function() {
+            stopCommand();
+            if (command === "/left" || command === "/right") {
+                centerHeadPan();
+            }
+        });
+        button.addEventListener('touchstart', function() {
+            startCommand(command);
+            if (command === "/left" || command === "/right") {
+                updateHeadPanForDirection(command === "/left" ? "left" : "right");
+            }
+        });
+        button.addEventListener('touchend', function() {
+            stopCommand();
+            if (command === "/left" || command === "/right") {
+                centerHeadPan();
+            }
+        });
+        button.addEventListener('mouseleave', function() {
+            stopCommand();
+            if (command === "/left" || command === "/right") {
+                centerHeadPan();
+            }
+        });
+    });
+
+    function startCommand(command) {
+        if (currentCommand !== command) {
+            stopCommand();  // Ensure any previous command is stopped
+            currentCommand = command;
+            sendCommand(command);
+        }
+    }
+
+    function stopCommand() {
+        if (currentCommand) {
+            sendCommand("/stop");
+            currentCommand = null;
+        }
+        // Force the robot back into manual mode
+        sendCommand("/manual_mode");
+        logCommand("Manual control resumed, all auto commands stopped.");
+    }
+
+    // Functions for head panning when turning
+    function updateHeadPanForDirection(direction) {
+        let panValue;
+        if (direction === "left") {
+            panValue = 140; // Adjust for a slight left pan
+        } else if (direction === "right") {
+            panValue = 100; // Adjust for a slight right pan
+        }
+        sendHeadCommand(`/set_pan?value=${panValue}`);
+        logCommand(`Head panned ${direction}`);
+    }
+
+    function centerHeadPan() {
+        sendHeadCommand(`/set_pan?value=117`); // Default center pan
+        logCommand("Head centered");
+    }
+
+    function logCommand(message) {
+        const status = document.getElementById('status');
+        const p = document.createElement('p');
+        p.textContent = message;
+        status.appendChild(p);
+        status.scrollTop = status.scrollHeight;
+    }
+
+    // Function to start the wave routine
+    function startWaveRoutine() {
+        logCommand("Starting Wave Routine...");
+        // Move to base pose first
+        sendArmCommand('/basepose')
+            .then(() => {
+                logCommand("Moved to base pose.");
+                // Wait for a short duration to ensure safe movement
+                setTimeout(() => {
+                    moveToWavePosition();
+                }, 1000); // Wait 1 second
+            })
+            .catch(error => logCommand(`Error moving to base pose: ${error.message}`));
+    }
+
+    function moveToWavePosition() {
+        logCommand("Moving to wave position...");
+        // Move Right Arm to initial position
+        sendArmCommand(`/moveServo?channel=8&angle=24`);   // Right Shoulder A
+        sendArmCommand(`/moveServo?channel=9&angle=54`);   // Right Shoulder B
+        sendArmCommand(`/moveServo?channel=10&angle=90`);  // Right Wrist A
+        sendArmCommand(`/moveServo?channel=11&angle=77`);  // Right Wrist B
+
+        // Move Left Arm to initial position
+        sendArmCommand(`/moveServo?channel=0&angle=24`);   // Left Shoulder A
+        sendArmCommand(`/moveServo?channel=1&angle=99`);   // Left Shoulder B
+        sendArmCommand(`/moveServo?channel=2&angle=23`);   // Left Wrist A
+        sendArmCommand(`/moveServo?channel=3&angle=84`);   // Left Wrist B
+
+        // Wait for arms to reach the position
+        setTimeout(() => {
+            performWaveMotion();
+        }, 2000); // Wait 2 seconds
+    }
+
+    function performWaveMotion() {
+        logCommand("Performing wave motion...");
+        let waveCount = 0;
+        const maxWaves = 3; // Number of times to wave
+
+        function waveStep() {
+            if (waveCount < maxWaves) {
+                // Move Left Wrist A to 6 degrees
+                smoothMoveServo(2, 6, 500);  // Left Wrist A
+                // Move Left Wrist B to 40 degrees
+                smoothMoveServo(3, 40, 500); // Left Wrist B
+
+                setTimeout(() => {
+                    // Move Left Wrist A to 70 degrees
+                    smoothMoveServo(2, 70, 500); // Left Wrist A
+                    // Move Left Wrist B to 90 degrees
+                    smoothMoveServo(3, 90, 500); // Left Wrist B
+
+                    setTimeout(() => {
+                        waveCount++;
+                        waveStep(); // Repeat the wave
+                    }, 1000); // Wait 1 second before next wave
+                }, 1000); // Wait 1 second before moving back
+            } else {
+                // Finish by moving to side pose positions
+                sendArmCommand('/pose2'); // Assuming /pose2 is the side pose
+                logCommand("Wave routine complete.");
+            }
+        }
+
+        waveStep(); // Start the wave steps
+    }
+
+    // Function to smoothly move a servo from current position to target position over specified duration
+    function smoothMoveServo(channel, targetAngle, duration) {
+        // For simplicity, we assume immediate move; in practice, you'd implement interpolation
+        sendArmCommand(`/moveServo?channel=${channel}&angle=${targetAngle}`);
+    }
+
+    // Placeholder functions for dances and tasks
+    function startDanceRoutineC() {
+        const danceSteps = [
+            { action: "/forward", duration: 1000 },
+            { action: "/left", duration: 1000 },
+            { action: "/forward", duration: 1000 },
+            { action: "/right", duration: 1000 },
+            { action: "/stop", duration: 500 },
+            { action: "/forward", duration: 400 },
+            { action: "/backward", duration: 400 },
+            { action: "/forward", duration: 400 },
+            { action: "/backward", duration: 400 },
+            { action: "/left", duration: 150 },
+            { action: "/right", duration: 150 },
+            { action: "/stop", duration: 500 }
+        ];
+
+        let i = 0;
+        function nextStep() {
+            if (i < danceSteps.length) {
+                const step = danceSteps[i];
+                sendCommand(step.action);
+                setTimeout(nextStep, step.duration);
+                i++;
+            } else {
+                logCommand("Dance routine 1 complete!");
+            }
+        }
+        logCommand("Starting dance routine 1...");
+        nextStep();
+    }
+
+    function startDanceRoutine2() {
+        const danceSteps2 = [
+            { action: `${armURL}/pose1`, duration: 1000, commandType: "arm", description: "Arms Up RAWR!" },
+            { action: `${headURL}/set_pan?value=170`, duration: 800, commandType: "head", description: "Pan to look left" },
+            { action: `${headURL}/set_tilt?value=100`, duration: 500, commandType: "head", description: "Tilt up" },
+            { action: `${armURL}/pose4`, duration: 1200, commandType: "arm", description: "Form Spirit Ball" },
+            { action: `${robotURL}/forward`, duration: 1000, commandType: "mobile", description: "Move forward while holding Spirit Ball" },
+            { action: `${headURL}/set_pan?value=80`, duration: 800, commandType: "head", description: "Pan to look right" },
+            { action: `${robotURL}/stop`, duration: 500, commandType: "mobile", description: "Stop and prepare for arm raise" },
+            { action: `${armURL}/pose3`, duration: 1500, commandType: "arm", description: "Pose to Carry Something" },
+            { action: `${headURL}/set_tilt?value=75`, duration: 1000, commandType: "head", description: "Look down" },
+            { action: `${armURL}/pose5`, duration: 1300, commandType: "arm", description: "Gimme Money" },
+            { action: `${headURL}/set_tilt?value=90`, duration: 500, commandType: "head", description: "Return head to center" },
+            { action: `${armURL}/pose2`, duration: 1500, commandType: "arm", description: "Arms Side" },
+            { action: `${headURL}/set_pan?value=117`, duration: 500, commandType: "head", description: "Center head" },
+            { action: `${robotURL}/dance`, duration: 2000, commandType: "mobile", description: "Finishing dance with a classic jiggle" },
+            { action: `${armURL}/basepose`, duration: 1000, commandType: "arm", description: "Return to base pose" }
+        ];
+
+        let i = 0;
+
+        function nextStep() {
+            if (i < danceSteps2.length) {
+                const step = danceSteps2[i];
+
+                // Log the description of each step
+                logCommand(`Executing: ${step.description}`);
+
+                // Execute command based on commandType
+                if (step.commandType === "arm") {
+                    fetch(step.action)
+                        .then(() => logCommand(`${step.description} completed successfully`))
+                        .catch(error => logCommand(`Error executing ${step.description}: ${error.message}`));
+                } else if (step.commandType === "head") {
+                    fetch(step.action)
+                        .then(() => logCommand(`${step.description} completed successfully`))
+                        .catch(error => logCommand(`Error executing ${step.description}: ${error.message}`));
+                } else {
+                    sendCommand(step.action)
+                        .then(() => logCommand(`${step.description} completed successfully`))
+                        .catch(error => logCommand(`Error executing ${step.description}: ${error.message}`));
+                }
+
+                // Move to the next step after the specified duration
+                setTimeout(nextStep, step.duration);
+                i++;
+            } else {
+                logCommand("Dance routine 2 complete!");
+            }
+        }
+
+        logCommand("Starting dance routine 2...");
+        nextStep();
+    }
+
+    function startTaskA() {
+        sendCommand('/task_a');
+    }
+
+    // Task B: Moving in a square
+    function startTaskB() {
+        const squarePathSteps = [
+            { action: "/forward", duration: 1000, description: "Moving forward 1st side" },
+            { action: "/right", duration: 500, description: "Turning right at 1st corner" },
+            { action: "/forward", duration: 500, description: "Moving forward 2nd side" },
+            { action: "/right", duration: 500, description: "Turning right at 2nd corner" },
+            { action: "/forward", duration: 500, description: "Moving forward 3rd side" },
+            { action: "/right", duration: 500, description: "Turning right at 3rd corner" },
+            { action: "/forward", duration: 500, description: "Moving forward 4th side" },
+            { action: "/right", duration: 500, description: "Turning right to complete square" },
+            { action: "/stop", duration: 500, description: "Square completed; stopping" }
+        ];
+
+        let i = 0;
+        function nextStep() {
+            if (i < squarePathSteps.length) {
+                const step = squarePathSteps[i];
+                sendCommand(step.action);
+                logCommand(`${step.description} executed`);
+                setTimeout(nextStep, step.duration);
+                i++;
+            } else {
+                logCommand("Task B - Square Path completed!");
+            }
+        }
+
+        logCommand("Starting Task B - Moving in a square...");
+        nextStep();
+    }
+
+    // Task C
+    function startTaskC() {
+        const squarePathSteps = [
+            { action: "/forward", duration: 1000, description: "MOVE" },
+            { action: "/stop", duration: 5000, description: "STOP" },
+            { action: "/right", duration: 900, description: "MOVE" },
+            { action: "/stop", duration: 500, description: "Square completed; stopping" },
+            { action: "/left", duration: 900, description: "MOVE" },
+            { action: "/stop", duration: 5000, description: "STOP" },
+            { action: "/forward", duration: 1000, description: "STOP" },
+            { action: "/stop", duration: 5000, description: "STOP" }
+        ];
+
+        let i = 0;
+        function nextStep() {
+            if (i < squarePathSteps.length) {
+                const step = squarePathSteps[i];
+                sendCommand(step.action);
+                logCommand(`${step.description} executed`);
+                setTimeout(nextStep, step.duration);
+                i++;
+            } else {
+                logCommand("Task C - Square Path completed!");
+            }
+        }
+
+        logCommand("Starting Task C - Moving in a square...");
+        nextStep();
+    }
+
+    // TensorFlow.js Setup
+    let model;
+    const webcamElement = document.getElementById('webcam');
+    const log = document.getElementById('log');
+    const uniqueLog = document.getElementById('uniqueLog');
+    const confidenceDisplay = document.getElementById('confidenceDisplay');
+    const canvas = document.getElementById('canvas');
+
+    let lastPredictionTime = 0;
+    const predictionInterval = 500;
+    let trackingEnabled = false;  // Tracking mode state
+    let currentTarget = null;     // Current object being tracked
+    let targetSwitchTime = 5000;  // Time after which to switch targets (5 seconds)
+    let lastTargetSwitch = 0;     // Timestamp of last target switch
+    let noObjectTimeout = null;   // Timeout ID for recentering
+    const noObjectDelay = 5000;   // Delay before recentering head (5 seconds)
+
+    // Load the COCO-SSD model for object detection
+    cocoSsd.load().then(loadedModel => {
+        model = loadedModel;
+        startCamera();
+    });
+    function startCamera() {
+        // Use the webcam for now
+        navigator.mediaDevices
+            .getUserMedia({ video: true })
+            .then(stream => {
+                webcamElement.srcObject = stream;
+                webcamElement.onloadedmetadata = () => {
+                    webcamElement.play();
+                    liveAnalysisLoop(); // Continue with TensorFlow.js analysis loop
+                };
+            })
+            .catch(error => {
+                console.error("Error accessing webcam:", error);
+            });
+    }
+
+    function liveAnalysisLoop() {
+        const now = Date.now();
+        if (webcamElement.readyState === webcamElement.HAVE_ENOUGH_DATA && now - lastPredictionTime > predictionInterval) {
+            canvas.getContext('2d').drawImage(webcamElement, 0, 0, canvas.width, canvas.height);
+            model.detect(canvas).then(predictions => {
+                updateLog(predictions);
+                if (trackingEnabled) {
+                    handleTracking(predictions);
+                }
+                lastPredictionTime = now;
+            });
+        }
+        requestAnimationFrame(liveAnalysisLoop);
+    }
+
+    function updateLog(predictions) {
+        log.innerHTML = ''; // Clear previous log
+        predictions.forEach(p => {
+            const entry = document.createElement('div');
+            entry.textContent = `${p.class} - ${p.score.toFixed(2)}`;
+            if (p === predictions[0]) {
+                entry.style.color = 'yellow';
+                entry.style.fontWeight = 'bold';
+            }
+            log.appendChild(entry);
+        });
+        log.scrollTop = log.scrollHeight;
+    }
+
+    function updateUniqueLog(message) {
+        const uniqueObject = message.split(": ")[1];
+        if (!uniqueLog.innerText.includes(uniqueObject)) {
+            const entry = document.createElement('div');
+            entry.textContent = message;
+            entry.style.color = 'orange';
+            entry.style.fontWeight = 'bold';
+            uniqueLog.appendChild(entry);
+            uniqueLog.scrollTop = uniqueLog.scrollHeight;
+        }
+    }
+
+    function toggleTracking() {
+        trackingEnabled = !trackingEnabled;
+        document.getElementById('trackButton').innerText = trackingEnabled ? 'Deactivate TRACK' : 'Activate TRACK';
+        if (!trackingEnabled) {
+            currentTarget = null;
+            lastTargetSwitch = 0;
+            if (noObjectTimeout) {
+                clearTimeout(noObjectTimeout);
+                noObjectTimeout = null;
+            }
+            centerHead(); // Optionally, center the head when tracking is deactivated
+            logCommand("Tracking deactivated.");
+        } else {
+            logCommand("Tracking activated.");
+        }
+    }
+
+    function handleTracking(predictions) {
+        const now = Date.now();
+        // Filter predictions to only include objects with high confidence
+        const highConfidenceObjects = predictions.filter(p => p.score > 0.75);
+
+        if (highConfidenceObjects.length === 0) {
+            // No objects detected; start the recentering timer
+            if (!noObjectTimeout) {
+                noObjectTimeout = setTimeout(() => {
+                    logCommand("No objects detected. Recentering head.");
+                    centerHead(); // Center the head
+                    noObjectTimeout = null; // Reset timeout
+                }, noObjectDelay);
+            }
+            return;
+        }
+
+        // Clear the recentering timeout if objects are detected
+        if (noObjectTimeout) {
+            clearTimeout(noObjectTimeout);
+            noObjectTimeout = null;
+        }
+
+        // Switch target every 'targetSwitchTime' milliseconds
+        if (!currentTarget || now - lastTargetSwitch > targetSwitchTime) {
+            currentTarget = highConfidenceObjects[Math.floor(Math.random() * highConfidenceObjects.length)];
+            lastTargetSwitch = now;
+            logCommand(`Now looking at: ${currentTarget.class}`);
+        }
+
+        if (currentTarget) {
+            moveHeadToCenterObject(currentTarget);
+        }
+    }
+
+    function moveHeadToCenterObject(object) {
+        const canvasWidth = canvas.width;
+        const canvasHeight = canvas.height;
+
+        // Calculate center of the bounding box
+        const xCenter = object.bbox[0] + object.bbox[2] / 2;
+        const yCenter = object.bbox[1] + object.bbox[3] / 2;
+
+        // Normalize coordinates to [-1, 1]
+        const xNormalized = (xCenter - canvasWidth / 2) / (canvasWidth / 2);
+        const yNormalized = (yCenter - canvasHeight / 2) / (canvasHeight / 2);
+
+        // Calculate the desired pan and tilt adjustments
+        const panAdjustment = xNormalized * 10;   // Adjust sensitivity as needed
+        const tiltAdjustment = yNormalized * 10;
+
+        // Get current head pan and tilt values
+        const headPanSlider = document.getElementById('headPanSlider');
+        const headTiltSlider = document.getElementById('headTiltSlider');
+        let currentPan = parseFloat(headPanSlider.value);
+        let currentTilt = parseFloat(headTiltSlider.value);
+
+        // Calculate new pan and tilt values with smoothing
+        const newPan = currentPan + panAdjustment;
+        const newTilt = currentTilt - tiltAdjustment;
+
+        // Clamp values to servo limits
+        const clampedPan = Math.max(0, Math.min(270, newPan));
+        const clampedTilt = Math.max(75, Math.min(110, newTilt));
+
+        // Update sliders and send commands
+        headPanSlider.value = clampedPan;
+        headTiltSlider.value = clampedTilt;
+        updateHeadPan(clampedPan);
+        updateHeadTilt(clampedTilt);
+
+        logCommand(`Looking at ${currentTarget.class}: Pan to ${clampedPan.toFixed(2)}°, Tilt to ${clampedTilt.toFixed(2)}°`);
+    }
+
+    // Mapping function
+    // Update map with distance data
+    function updateMap(sensorData) {
+        // Clear canvas
+        ctx.clearRect(0, 0, mapSize, mapSize);
+
+        // Draw robot position at center
+        ctx.fillStyle = '#00ff00';
+        ctx.beginPath();
+        ctx.arc(robotPosition.x, robotPosition.y, 5, 0, 2 * Math.PI);
+        ctx.fill();
+
+        // Add current position to path history
+        pathHistory.push({ x: robotPosition.x, y: robotPosition.y });
+        if (pathHistory.length > 100) pathHistory.shift();
+
+        // Draw path history
+        ctx.strokeStyle = '#008000';
+        ctx.beginPath();
+        ctx.moveTo(pathHistory[0].x, pathHistory[0].y);
+        for (let i = 1; i < pathHistory.length; i++) {
+            ctx.lineTo(pathHistory[i].x, pathHistory[i].y);
+        }
+        ctx.stroke();
+
+        // Convert sensor distances to points on the map
+        drawSensorReading(sensorData.front, 0, '#ff0000');   // Front - red
+        drawSensorReading(sensorData.left, -90, '#0000ff');  // Left - blue
+        drawSensorReading(sensorData.right, 90, '#0000ff');  // Right - blue
+        drawSensorReading(sensorData.rear, 180, '#ff0000');  // Rear - red
+    }
+
+    // Function to draw sensor reading as points around the robot
+    function drawSensorReading(distance, angleOffset, color) {
+        const maxDistance = 150; // Maximum distance to display (in cm)
+        const displayDistance = Math.min(distance, maxDistance);
+
+        const angleRad = (angleOffset - 90) * (Math.PI / 180);
+        const endX = robotPosition.x + displayDistance * Math.cos(angleRad) * scale;
+        const endY = robotPosition.y + displayDistance * Math.sin(angleRad) * scale;
+
+        // Draw line representing sensor reading
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(robotPosition.x, robotPosition.y);
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+
+        // Draw a small circle at the obstacle position
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(endX, endY, 3, 0, 2 * Math.PI);
+        ctx.fill();
+    }
+
+</script>
+
+</body>
+</html>
